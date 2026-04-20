@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "early-sepsis-detection"
+version = "0.1.0"
+description = "Production-style machine learning scaffold for early sepsis detection."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "Early Sepsis Team" }]
+dependencies = [
+  "pandas>=2.2.0",
+  "numpy>=1.26.0",
+  "pyarrow>=16.0.0",
+  "scikit-learn>=1.5.0",
+  "torch>=2.4.0",
+  "lightning>=2.3.0",
+  "hydra-core>=1.3.2",
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "pydantic>=2.8.0",
+  "pydantic-settings>=2.3.4",
+  "mlflow>=2.14.0",
+  "prefect>=2.19.0",
+  "optuna>=3.6.0",
+  "streamlit>=1.37.0",
+  "httpx>=0.27.0",
+  "joblib>=1.4.0",
+  "python-dotenv>=1.0.1"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+  "ruff>=0.6.0",
+  "mypy>=1.10.0"
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/early_sepsis"]
+
+[tool.pytest.ini_options]
+minversion = "7.4"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = ["src"]
+packages = ["early_sepsis"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+ignore_missing_imports = true

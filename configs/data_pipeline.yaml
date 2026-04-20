@@ -1,0 +1,17 @@
+data_pipeline:
+  raw_data_path: data/raw
+  dataset_format: auto
+  output_dir: artifacts/processed
+  train_ratio: 0.7
+  validation_ratio: 0.15
+  test_ratio: 0.15
+  random_seed: 42
+
+windowing:
+  processed_dir: artifacts/processed
+  output_dir: artifacts/windows
+  window_length: 8
+  prediction_horizon: 6
+  padding_mode: false
+  include_masks: true
+  include_static: true

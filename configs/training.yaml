@@ -1,0 +1,7 @@
+training:
+  data_path: tests/fixtures/synthetic_tabular.csv
+  dataset_format: csv
+  target_column: SepsisLabel
+  model_output_path: artifacts/models/model.pkl
+  test_size: 0.2
+  random_state: 42

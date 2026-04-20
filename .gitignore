@@ -1,0 +1,57 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+.envrc
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local environment files
+.env
+!.env.example
+
+# IDE/editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Data and experiment outputs
+data/raw/
+data/local_csv/
+data/interim/
+data/external/
+data/processed/
+data/windows/
+mlruns/
+.prefect/
+optuna.db
+
+# Runtime artifacts
+artifacts/*
+!artifacts/.gitkeep
+
+# Synthetic ad-hoc outputs
+tests/fixtures/generated_synthetic.csv
+
+# Logs
+*.log

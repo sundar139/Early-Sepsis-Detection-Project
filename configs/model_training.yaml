@@ -1,0 +1,42 @@
+training:
+  windows_dir: artifacts/windows
+  output_dir: artifacts/models/sequence
+  model_name: patchtst_classifier
+  seed: 42
+  device: auto
+  epochs: 20
+  batch_size: 256
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  max_grad_norm: 1.0
+  num_workers: 0
+  early_stopping_patience: 6
+  early_stopping_min_delta: 0.0001
+  scheduler_patience: 3
+  scheduler_factor: 0.5
+  threshold: 0.5
+  optimize_threshold: true
+  calibration_bins: 10
+  imbalance_strategy: both
+
+model:
+  model_type: patchtst
+  include_mask: true
+  include_static: true
+  recurrent_hidden_dim: 128
+  recurrent_num_layers: 2
+  recurrent_dropout: 0.2
+  recurrent_bidirectional: true
+  patch_len: 4
+  patch_stride: 2
+  patch_d_model: 128
+  patch_num_heads: 4
+  patch_num_layers: 3
+  patch_ff_dim: 256
+  patch_dropout: 0.2
+
+mlflow:
+  enabled: true
+  tracking_uri: sqlite:///mlflow.db
+  experiment_name: early-sepsis-sequence
+  run_name: null
