@@ -22,6 +22,52 @@ METRIC_LABELS: dict[str, str] = {
     "expected_calibration_error": "Expected Calibration Error",
 }
 
+METRIC_DIRECTION_LABELS: dict[str, str] = {
+    "auroc": "Higher is better",
+    "auprc": "Higher is better",
+    "precision": "Higher is better",
+    "recall": "Higher is better",
+    "f1": "Higher is better",
+    "accuracy": "Higher is better",
+    "brier_score": "Lower is better",
+    "expected_calibration_error": "Lower is better",
+}
+
+METRIC_EXPLANATIONS: dict[str, str] = {
+    "auroc": "Measures ranking quality across all thresholds.",
+    "auprc": (
+        "Measures positive-class retrieval quality and is typically more informative under low "
+        "prevalence."
+    ),
+    "precision": "Fraction of alerts that are true positives.",
+    "recall": "Fraction of true positives captured by the model.",
+    "f1": "Harmonic mean of precision and recall.",
+    "accuracy": "Overall fraction of correct predictions.",
+    "brier_score": "Mean squared error between predicted probabilities and true outcomes.",
+    "expected_calibration_error": (
+        "Average absolute gap between predicted risk and observed frequency across bins."
+    ),
+}
+
+CALIBRATION_UNAVAILABLE_GUIDANCE = (
+    "Calibration visuals are unavailable in this deployment package. Expected Calibration Error "
+    "(ECE) tracks how closely predicted risk matches observed frequency, while Brier "
+    "score captures overall probability error. Calibration quality matters in clinical "
+    "risk scoring because poorly "
+    "calibrated probabilities can mislead downstream triage decisions."
+)
+
+OPERATIONAL_UNAVAILABLE_GUIDANCE = (
+    "Threshold-dependent operational summary requires packaged evaluation windows with labels and "
+    "model-compatible sequence features. This deployment does not include those windows, so the "
+    "operational panel is disabled here."
+)
+
+SAVED_WALKTHROUGH_UNAVAILABLE_GUIDANCE = (
+    "Live inference windows are unavailable for this deployment and no saved walkthrough payload "
+    "was bundled."
+)
+
 PLOT_TITLES: dict[str, str] = {
     "roc_curve": "ROC Curve",
     "pr_curve": "Precision-Recall Curve",
@@ -79,6 +125,17 @@ def format_threshold_mode(mode: str) -> str:
 
 def describe_threshold_mode(mode: str) -> str:
     return THRESHOLD_MODE_DESCRIPTIONS.get(mode, "")
+
+
+def build_metric_annotation(metric_key: str) -> str:
+    direction = METRIC_DIRECTION_LABELS.get(metric_key, "")
+    explanation = METRIC_EXPLANATIONS.get(metric_key, "")
+
+    if direction and explanation:
+        return f"{direction}. {explanation}"
+    if direction:
+        return direction
+    return explanation
 
 
 def find_duplicate_threshold_modes(
@@ -478,6 +535,141 @@ def load_experiment_comparison(
 
     selected = ordered[available_columns].head(limit).rename(columns=desired_columns)
     return selected.reset_index(drop=True)
+
+
+def _standardize_feature_importance_frame(
+    frame: pd.DataFrame,
+    *,
+    limit: int,
+) -> pd.DataFrame | None:
+    feature_candidates = ("feature", "Feature", "name", "variable")
+    importance_candidates = ("importance", "Importance", "weight", "score")
+
+    feature_column = next(
+        (column for column in feature_candidates if column in frame.columns),
+        None,
+    )
+    importance_column = next(
+        (column for column in importance_candidates if column in frame.columns),
+        None,
+    )
+    if feature_column is None or importance_column is None:
+        return None
+
+    normalized = frame[[feature_column, importance_column]].copy()
+    normalized.columns = ["Feature", "Importance"]
+    normalized["Feature"] = normalized["Feature"].astype(str)
+    normalized["Importance"] = pd.to_numeric(normalized["Importance"], errors="coerce")
+    normalized = normalized.dropna(subset=["Importance"])
+    if normalized.empty:
+        return None
+
+    normalized = normalized.sort_values(by="Importance", ascending=False).head(limit)
+    return normalized.reset_index(drop=True)
+
+
+def _load_feature_importance_json(path: Path, *, limit: int) -> pd.DataFrame | None:
+    payload = _load_json_mapping(path)
+    if payload is None:
+        return None
+
+    if all(
+        isinstance(key, str) and isinstance(value, (float, int))
+        for key, value in payload.items()
+    ):
+        frame = pd.DataFrame(
+            {
+                "Feature": list(payload.keys()),
+                "Importance": [float(value) for value in payload.values()],
+            }
+        )
+        return (
+            frame.sort_values(by="Importance", ascending=False)
+            .head(limit)
+            .reset_index(drop=True)
+        )
+
+    rows_payload = payload.get("rows")
+    if isinstance(rows_payload, list):
+        row_frame = pd.DataFrame(rows_payload)
+        return _standardize_feature_importance_frame(row_frame, limit=limit)
+
+    return None
+
+
+def load_feature_importance_artifact(
+    *,
+    manifest_path: Path,
+    public_artifacts_root: Path | None = None,
+    limit: int = 10,
+) -> pd.DataFrame | None:
+    candidate_paths = [
+        resolve_runtime_path(
+            Path("artifacts/analysis/explainability/feature_importance.csv"),
+            anchor=manifest_path.parent,
+        ),
+        resolve_runtime_path(
+            Path("artifacts/analysis/explainability/feature_importance.json"),
+            anchor=manifest_path.parent,
+        ),
+        resolve_runtime_path(
+            Path("artifacts/analysis/experiments/feature_importance.csv"),
+            anchor=manifest_path.parent,
+        ),
+        resolve_runtime_path(
+            Path("artifacts/analysis/experiments/feature_importance.json"),
+            anchor=manifest_path.parent,
+        ),
+    ]
+
+    if public_artifacts_root is not None:
+        candidate_paths.extend(
+            [
+                resolve_runtime_path(
+                    public_artifacts_root
+                    / "analysis"
+                    / "explainability"
+                    / "feature_importance.csv",
+                    anchor=manifest_path.parent,
+                ),
+                resolve_runtime_path(
+                    public_artifacts_root
+                    / "analysis"
+                    / "explainability"
+                    / "feature_importance.json",
+                    anchor=manifest_path.parent,
+                ),
+                resolve_runtime_path(
+                    public_artifacts_root / "analysis" / "experiments" / "feature_importance.csv",
+                    anchor=manifest_path.parent,
+                ),
+                resolve_runtime_path(
+                    public_artifacts_root / "analysis" / "experiments" / "feature_importance.json",
+                    anchor=manifest_path.parent,
+                ),
+            ]
+        )
+
+    for candidate_path in candidate_paths:
+        if not candidate_path.exists():
+            continue
+
+        if candidate_path.suffix.lower() == ".csv":
+            try:
+                frame = pd.read_csv(candidate_path)
+            except Exception:
+                continue
+            standardized = _standardize_feature_importance_frame(frame, limit=limit)
+            if standardized is not None:
+                return standardized
+            continue
+
+        if candidate_path.suffix.lower() == ".json":
+            standardized = _load_feature_importance_json(candidate_path, limit=limit)
+            if standardized is not None:
+                return standardized
+
+    return None
 
 
 def detect_latest_pytest_status(*, project_root: Path) -> tuple[str, str]:

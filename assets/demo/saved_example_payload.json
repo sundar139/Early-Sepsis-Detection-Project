@@ -1,0 +1,9 @@
+{
+  "sample_id": "DS-EX-001",
+  "label": 1,
+  "end_hour": 8,
+  "base_value": 0.16,
+  "trend_delta": 0.22,
+  "trend_feature_index": 0,
+  "walkthrough_note": "Saved synthetic walkthrough sample used when live parquet windows are unavailable in deployment."
+}

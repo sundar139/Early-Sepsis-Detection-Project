@@ -18,6 +18,7 @@ def _apply_streamlit_secrets_to_env() -> None:
         "environment": "SEPSIS_ENVIRONMENT",
         "selected_sequence_manifest_path": "SEPSIS_SELECTED_SEQUENCE_MANIFEST_PATH",
         "public_artifacts_dir": "SEPSIS_PUBLIC_ARTIFACTS_DIR",
+        "public_repo_url": "SEPSIS_PUBLIC_REPO_URL",
         "serving_default_operating_mode": "SEPSIS_SERVING_DEFAULT_OPERATING_MODE",
         "demo_public_mode": "SEPSIS_DEMO_PUBLIC_MODE",
         "demo_sample_parquet_path": "SEPSIS_DEMO_SAMPLE_PARQUET_PATH",

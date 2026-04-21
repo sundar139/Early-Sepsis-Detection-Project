@@ -327,8 +327,15 @@ local FastAPI service to be running.
 The deployed UI is presentation-safe by default: no raw manifest dumps, no checkpoint/parquet path
 exposure, and no machine-specific absolute paths are rendered.
 
-When `SEPSIS_DEMO_PUBLIC_MODE=true` (or `SEPSIS_ENVIRONMENT` is non-development), the demo defaults
-to a tiny safe sample parquet at `data/demo/sequence_demo_samples.parquet` and auto-creates it if missing.
+When `SEPSIS_DEMO_PUBLIC_MODE=true` (or `SEPSIS_ENVIRONMENT` is non-development), inference fallback
+order is:
+
+1. `assets/demo/sequence_demo_samples.parquet`
+2. `<manifest.dataset.windows_dir>/<split>.parquet`
+3. `assets/demo/saved_example_payload.json` (single-sample saved walkthrough)
+
+If none of these sources is available, the inference section remains visible with a polished
+artifact-unavailable card instead of a runtime traceback.
 
 ## Deploy
 
@@ -362,12 +369,24 @@ Optional for richer UI:
 - calibration plot images and reliability CSV under `public_artifacts/analysis/calibration/`
 - `public_artifacts/analysis/experiments/sequence_experiment_comparison.csv`
 - `public_artifacts/demo/sequence_demo_samples.parquet`
+- `public_artifacts/demo/saved_example_payload.json`
+
+Recommended repository assets for public fallback order:
+
+- `assets/demo/sequence_demo_samples.parquet`
+- `assets/demo/saved_example_payload.json`
 
 Build a compact bundle from local selected artifacts:
 
 ```bash
 uv run python scripts/prepare_public_artifacts.py --manifest-path artifacts/models/registry/selected_model.json --output-dir public_artifacts
 ```
+
+The bundle script copies demo fallback assets in this order when available:
+
+1. `assets/demo/sequence_demo_samples.parquet`
+2. `data/demo/sequence_demo_samples.parquet`
+3. `assets/demo/saved_example_payload.json`
 
 ### Streamlit Community Cloud
 
@@ -382,6 +401,7 @@ demo_public_mode = true
 selected_sequence_manifest_path = "public_artifacts/models/registry/selected_model.json"
 public_artifacts_dir = "public_artifacts"
 demo_sample_parquet_path = "public_artifacts/demo/sequence_demo_samples.parquet"
+public_repo_url = "https://github.com/<owner>/<repo>"
 ```
 
 The entrypoint maps these values to the existing `SEPSIS_*` settings at runtime. Do not commit
@@ -392,6 +412,7 @@ The entrypoint maps these values to the existing `SEPSIS_*` settings at runtime.
 - `Selected sequence manifest was not found`: confirm `public_artifacts/models/registry/selected_model.json` exists.
 - `Selected checkpoint file is missing`: confirm manifest `selected_run.checkpoint_path` points to a file inside repo.
 - Missing visuals: include calibration artifacts in `public_artifacts/analysis/calibration/`; the app will show a safe unavailable state otherwise.
+- Inference section shows walkthrough-only mode: add `assets/demo/sequence_demo_samples.parquet` for live multi-window inference, or keep `assets/demo/saved_example_payload.json` for single-sample fallback.
 - Import errors in cloud: ensure requirements install completed successfully and Python version matches `runtime.txt`.
 
 Print/PDF note:

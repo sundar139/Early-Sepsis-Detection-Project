@@ -8,7 +8,9 @@ import pytest
 
 from early_sepsis.demo.startup import (
     DemoStartupError,
+    build_saved_example_walkthrough_sample,
     ensure_demo_sample_parquet,
+    resolve_demo_inference_source,
     resolve_manifest_path,
     validate_demo_startup,
 )
@@ -194,3 +196,150 @@ def test_ensure_demo_sample_parquet_uses_public_fallback_when_available(tmp_path
 
     assert generated is False
     assert resolved_path == public_sample_path.resolve()
+
+
+def test_resolve_demo_inference_source_prefers_bundled_asset_in_public_mode(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "artifacts" / "models" / "sequence" / "run_demo" / "best.pt"
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.touch()
+
+    manifest_path = tmp_path / "artifacts" / "models" / "registry" / "selected_model.json"
+    payload = _build_manifest_payload(tmp_path, checkpoint_path)
+    save_model_manifest(manifest_path, payload)
+
+    bundled_demo_path = tmp_path / "assets" / "demo" / "sequence_demo_samples.parquet"
+    bundled_demo_path.parent.mkdir(parents=True, exist_ok=True)
+    bundled_demo_path.write_bytes(b"PAR1")
+
+    windows_validation_path = tmp_path / "windows" / "validation.parquet"
+    windows_validation_path.parent.mkdir(parents=True, exist_ok=True)
+    windows_validation_path.write_bytes(b"PAR1")
+
+    inference_source = resolve_demo_inference_source(
+        payload,
+        manifest_path=manifest_path,
+        split="validation",
+        public_mode=True,
+        bundled_demo_path=bundled_demo_path,
+    )
+
+    assert inference_source.source_kind == "parquet"
+    assert inference_source.source_label == "Bundled demo artifact"
+    assert inference_source.parquet_path == bundled_demo_path.resolve()
+
+
+def test_resolve_demo_inference_source_falls_back_to_evaluation_windows(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "artifacts" / "models" / "sequence" / "run_demo" / "best.pt"
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.touch()
+
+    manifest_path = tmp_path / "artifacts" / "models" / "registry" / "selected_model.json"
+    payload = _build_manifest_payload(tmp_path, checkpoint_path)
+    save_model_manifest(manifest_path, payload)
+
+    windows_validation_path = tmp_path / "windows" / "validation.parquet"
+    windows_validation_path.parent.mkdir(parents=True, exist_ok=True)
+    windows_validation_path.write_bytes(b"PAR1")
+
+    inference_source = resolve_demo_inference_source(
+        payload,
+        manifest_path=manifest_path,
+        split="validation",
+        public_mode=True,
+        bundled_demo_path=tmp_path / "assets" / "demo" / "missing.parquet",
+    )
+
+    assert inference_source.source_kind == "parquet"
+    assert inference_source.source_label == "Evaluation validation windows"
+    assert inference_source.parquet_path == windows_validation_path.resolve()
+
+
+def test_resolve_demo_inference_source_uses_walkthrough_payload_when_needed(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "artifacts" / "models" / "sequence" / "run_demo" / "best.pt"
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.touch()
+
+    manifest_path = tmp_path / "artifacts" / "models" / "registry" / "selected_model.json"
+    payload = _build_manifest_payload(tmp_path, checkpoint_path)
+    save_model_manifest(manifest_path, payload)
+
+    walkthrough_payload_path = tmp_path / "assets" / "demo" / "saved_example_payload.json"
+    walkthrough_payload_path.parent.mkdir(parents=True, exist_ok=True)
+    walkthrough_payload_path.write_text('{"sample_id": "DS-EX-001"}', encoding="utf-8")
+
+    inference_source = resolve_demo_inference_source(
+        payload,
+        manifest_path=manifest_path,
+        split="validation",
+        public_mode=True,
+        bundled_demo_path=tmp_path / "assets" / "demo" / "missing.parquet",
+        walkthrough_payload_path=walkthrough_payload_path,
+    )
+
+    assert inference_source.source_kind == "walkthrough"
+    assert inference_source.walkthrough_payload_path == walkthrough_payload_path.resolve()
+
+
+def test_build_saved_example_walkthrough_sample_matches_manifest_dimensions(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "artifacts" / "models" / "sequence" / "run_demo" / "best.pt"
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.touch()
+
+    payload = _build_manifest_payload(tmp_path, checkpoint_path)
+    payload_path = tmp_path / "assets" / "demo" / "saved_example_payload.json"
+    payload_path.parent.mkdir(parents=True, exist_ok=True)
+    payload_path.write_text(
+        """
+{
+  "sample_id": "EX-010",
+  "label": 1,
+  "trend_feature_index": 2,
+  "walkthrough_note": "Synthetic walkthrough payload"
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    walkthrough = build_saved_example_walkthrough_sample(payload, payload_path)
+
+    request_sample = walkthrough["request_sample"]
+    assert walkthrough["sample_id"].startswith("DS-")
+    assert len(request_sample["features"]) == 8
+    assert len(request_sample["features"][0]) == 3
+    assert len(request_sample["missing_mask"]) == 8
+    assert len(request_sample["missing_mask"][0]) == 3
+    assert len(request_sample["static_features"]) == 2
+
+
+def test_resolve_demo_inference_source_returns_unavailable_when_no_sources(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "artifacts" / "models" / "sequence" / "run_demo" / "best.pt"
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.touch()
+
+    manifest_path = tmp_path / "artifacts" / "models" / "registry" / "selected_model.json"
+    payload = _build_manifest_payload(tmp_path, checkpoint_path)
+    save_model_manifest(manifest_path, payload)
+
+    inference_source = resolve_demo_inference_source(
+        payload,
+        manifest_path=manifest_path,
+        split="validation",
+        public_mode=True,
+        bundled_demo_path=tmp_path / "assets" / "demo" / "missing.parquet",
+        walkthrough_payload_path=tmp_path / "assets" / "demo" / "missing.json",
+    )
+
+    assert inference_source.source_kind == "unavailable"
+    assert inference_source.parquet_path is None
+    assert inference_source.walkthrough_payload_path is None

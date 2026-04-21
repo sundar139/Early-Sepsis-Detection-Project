@@ -241,6 +241,25 @@ def main() -> int:
         if _write_public_experiment_comparison(comparison_source, comparison_target):
             copied_files.append(make_portable_path(comparison_target))
 
+    demo_target = output_root / "demo" / "sequence_demo_samples.parquet"
+    demo_candidates = [
+        resolve_runtime_path(Path("assets/demo/sequence_demo_samples.parquet")),
+        resolve_runtime_path(Path("data/demo/sequence_demo_samples.parquet")),
+    ]
+    for demo_candidate in demo_candidates:
+        if _copy_file_if_exists(demo_candidate, demo_target):
+            copied_files.append(make_portable_path(demo_target))
+            break
+
+    walkthrough_target = output_root / "demo" / "saved_example_payload.json"
+    walkthrough_candidates = [
+        resolve_runtime_path(Path("assets/demo/saved_example_payload.json")),
+    ]
+    for walkthrough_candidate in walkthrough_candidates:
+        if _copy_file_if_exists(walkthrough_candidate, walkthrough_target):
+            copied_files.append(make_portable_path(walkthrough_target))
+            break
+
     save_model_manifest(output_manifest_path, rewritten_manifest)
     copied_files.append(make_portable_path(output_manifest_path))
 

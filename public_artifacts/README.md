@@ -18,6 +18,7 @@ Optional files for richer artifact-backed presentation:
 - analysis/calibration/reliability_curve.csv
 - analysis/experiments/sequence_experiment_comparison.csv
 - demo/sequence_demo_samples.parquet
+- demo/saved_example_payload.json
 
 Notes:
 

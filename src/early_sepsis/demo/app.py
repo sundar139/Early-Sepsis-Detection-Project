@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import configparser
 from pathlib import Path
 from typing import Any
 
@@ -8,8 +9,12 @@ import pandas as pd
 import streamlit as st
 
 from early_sepsis.demo.presentation import (
+    CALIBRATION_UNAVAILABLE_GUIDANCE,
     METRIC_LABELS,
+    OPERATIONAL_UNAVAILABLE_GUIDANCE,
     PLOT_TITLES,
+    SAVED_WALKTHROUGH_UNAVAILABLE_GUIDANCE,
+    build_metric_annotation,
     collect_metric_snapshot,
     collect_plot_artifacts,
     compute_operational_metrics,
@@ -18,14 +23,16 @@ from early_sepsis.demo.presentation import (
     find_duplicate_threshold_modes,
     format_threshold_mode,
     load_experiment_comparison,
+    load_feature_importance_artifact,
     load_reliability_curve,
     resolve_calibration_summary,
-    safe_data_source_label,
     sanitize_public_text,
 )
 from early_sepsis.demo.startup import (
+    DemoInferenceSource,
     DemoStartupError,
-    ensure_demo_sample_parquet,
+    build_saved_example_walkthrough_sample,
+    resolve_demo_inference_source,
     resolve_manifest_path,
     validate_demo_startup,
 )
@@ -40,6 +47,44 @@ from early_sepsis.settings import get_settings
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[3]
+
+
+def _normalize_github_repo_url(value: str) -> str | None:
+    normalized = value.strip()
+    if not normalized:
+        return None
+
+    if normalized.startswith("git@github.com:"):
+        normalized = normalized.replace("git@github.com:", "https://github.com/")
+    if normalized.endswith(".git"):
+        normalized = normalized[:-4]
+
+    if normalized.startswith("https://github.com/"):
+        return normalized
+
+    return None
+
+
+def _resolve_repo_url(*, settings_repo_url: str | None, project_root: Path) -> str | None:
+    explicit_value = _normalize_github_repo_url(settings_repo_url or "")
+    if explicit_value is not None:
+        return explicit_value
+
+    config_path = project_root / ".git" / "config"
+    if not config_path.exists():
+        return None
+
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(config_path, encoding="utf-8")
+    except Exception:
+        return None
+
+    remote_section = 'remote "origin"'
+    if not parser.has_option(remote_section, "url"):
+        return None
+
+    return _normalize_github_repo_url(parser.get(remote_section, "url"))
 
 
 def _apply_theme() -> None:
@@ -102,6 +147,39 @@ def _apply_theme() -> None:
             color: #c0d0ef;
             line-height: 1.55;
             max-width: 820px;
+        }
+        .hero-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.55rem;
+            margin-top: 0.9rem;
+        }
+        .hero-link-button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 9px;
+            border: 1px solid rgba(150, 180, 232, 0.42);
+            background: rgba(41, 66, 105, 0.9);
+            color: #f2f7ff !important;
+            font-size: 0.83rem;
+            font-weight: 620;
+            text-decoration: none !important;
+            padding: 0.42rem 0.78rem;
+        }
+        .hero-link-button:hover {
+            background: rgba(57, 86, 130, 0.95);
+            border-color: rgba(171, 198, 244, 0.7);
+        }
+        .why-matters-card {
+            background: rgba(18, 29, 48, 0.82);
+            border: 1px solid rgba(112, 146, 208, 0.3);
+            border-radius: 13px;
+            padding: 0.85rem 0.95rem;
+            margin-bottom: 1rem;
+            color: #d2e0f7;
+            line-height: 1.5;
+            font-size: 0.9rem;
         }
         .disclaimer-banner {
             margin-top: 1rem;
@@ -466,6 +544,7 @@ def _render_hero_section(
     window_length: int,
     feature_count: int,
     status: str,
+    repo_url: str | None,
 ) -> None:
     badges = [
         f"Model Family: {model_family}",
@@ -475,6 +554,14 @@ def _render_hero_section(
         f"Status: {status}",
     ]
     badges_markup = "".join(f"<span class='badge-pill'>{badge}</span>" for badge in badges)
+    actions_markup = ""
+    if repo_url:
+        actions_markup = (
+            "<div class='hero-actions'>"
+            f"<a class='hero-link-button' href='{repo_url}' target='_blank' "
+            "rel='noopener noreferrer'>View GitHub Repository</a>"
+            "</div>"
+        )
 
     st.markdown(
         (
@@ -489,8 +576,23 @@ def _render_hero_section(
             "Research use only. This demonstration is not a medical device and must not be "
             "used for clinical diagnosis or treatment decisions."
             "</div>"
+            f"{actions_markup}"
             f"<div class='badge-row'>{badges_markup}</div>"
             "</section>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _render_why_this_matters() -> None:
+    st.markdown("<div class='section-title'>Why This Matters</div>", unsafe_allow_html=True)
+    st.markdown(
+        (
+            "<div class='why-matters-card'>"
+            "Sepsis can escalate rapidly, and delayed recognition increases mortality risk and "
+            "critical-care burden. Earlier risk visibility can help teams prioritize monitoring "
+            "and escalation conversations before deterioration becomes irreversible."
+            "</div>"
         ),
         unsafe_allow_html=True,
     )
@@ -503,13 +605,15 @@ def _render_project_status_strip(
     threshold_modes: list[str],
     plot_count: int,
 ) -> None:
-    chips = [
+    chips: list[tuple[str, str]] = [
         ("Model", "Ready"),
         ("Calibration", "Synced" if calibration_synced else "Pending"),
         ("Threshold Modes", str(len(threshold_modes))),
         ("Visual Artifacts", str(plot_count)),
-        ("Test Signal", tests_status),
     ]
+    if tests_status != "Not available":
+        chips.append(("Test Signal", tests_status))
+
     chips_markup = "".join(
         f"<span class='status-chip'><strong>{label}:</strong> {value}</span>"
         for label, value in chips
@@ -575,6 +679,10 @@ def _render_performance_summary(
         "These model-evaluation metrics are threshold-invariant and do not change when the "
         "operating mode changes."
     )
+    st.caption(
+        "Threshold-dependent alerting behavior is summarized separately in the operational "
+        "section below."
+    )
     st.caption(f"Metric source: {metric_source}")
 
     invariant_metric_keys = (
@@ -589,6 +697,7 @@ def _render_performance_summary(
             _render_card(
                 title=METRIC_LABELS[metric_key],
                 value=_format_metric_value(metric_snapshot.get(metric_key)),
+                subtitle=build_metric_annotation(metric_key),
             )
 
     prevalence_value: float | None = None
@@ -601,12 +710,15 @@ def _render_performance_summary(
         _render_card(
             title="Dataset Prevalence",
             value=_format_percent(prevalence_value),
-            subtitle="Observed positive rate in evaluation windows.",
+            subtitle=(
+                "Lower prevalence increases class imbalance and typically makes AUPRC more "
+                "decision-relevant than AUROC for deployment review."
+            ),
         )
 
     st.info(
-        "For imbalanced early sepsis detection, prioritize AUPRC and calibration quality "
-        "alongside AUROC for deployment review."
+        "In low-prevalence sepsis screening, AUPRC usually provides more deployment-relevant "
+        "signal than AUROC because it reflects precision-recall tradeoffs under class imbalance."
     )
 
     if calibration_summary is not None:
@@ -640,6 +752,10 @@ def _render_threshold_strategy(
         options=available_modes,
         horizontal=True,
         format_func=format_threshold_mode,
+        help=(
+            "Choose which manifest-configured operating threshold to apply. This does not change "
+            "model weights or probability math; it only changes alert decision cutoff."
+        ),
     )
 
     columns = st.columns(len(available_modes))
@@ -684,6 +800,7 @@ def _render_operational_summary(
     applied_threshold: float,
     source_label: str,
     duplicate_thresholds: list[tuple[float, tuple[str, ...]]],
+    unavailable_reason: str | None = None,
 ) -> None:
     st.markdown(
         "<div class='section-title'>Threshold-Dependent Operational Summary</div>",
@@ -698,9 +815,9 @@ def _render_operational_summary(
         _render_artifact_unavailable_card(
             title="Operational summary",
             guidance=(
-                "No windows were available to compute threshold-dependent metrics for the "
-                "current source selection."
-            ),
+                f"{OPERATIONAL_UNAVAILABLE_GUIDANCE} "
+                f"{unavailable_reason or ''}"
+            ).strip(),
         )
         return
 
@@ -863,12 +980,16 @@ def _render_evaluation_visuals(
                 )
                 st.caption("Reliability curve generated from artifact-backed bin statistics.")
             else:
+                guidance = (
+                    "This artifact was not found for the selected model package. "
+                    "Generate calibration analysis outputs to include this panel."
+                )
+                if plot_key == "reliability_curve":
+                    guidance = CALIBRATION_UNAVAILABLE_GUIDANCE
+
                 _render_artifact_unavailable_card(
                     title=PLOT_TITLES[plot_key],
-                    guidance=(
-                        "This artifact was not found for the selected model package. "
-                        "Generate calibration analysis outputs to include this panel."
-                    ),
+                    guidance=guidance,
                 )
 
             st.markdown("</div>", unsafe_allow_html=True)
@@ -876,7 +997,77 @@ def _render_evaluation_visuals(
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def _render_inference_demo(
+def _render_saved_example_walkthrough(
+    *,
+    manifest: dict[str, Any],
+    manifest_path: Path,
+    operating_mode: str,
+    feature_names: list[str],
+    walkthrough_payload_path: Path | None,
+) -> None:
+    if walkthrough_payload_path is None:
+        _render_artifact_unavailable_card(
+            title="Saved Example Walkthrough",
+            guidance=SAVED_WALKTHROUGH_UNAVAILABLE_GUIDANCE,
+        )
+        return
+
+    walkthrough_payload = build_saved_example_walkthrough_sample(
+        manifest,
+        walkthrough_payload_path,
+    )
+    request_sample = walkthrough_payload["request_sample"]
+
+    dataset_section = manifest.get("dataset", {})
+    try:
+        predictions = predict_sequence_samples(
+            manifest_path=manifest_path,
+            dataset_tag=str(dataset_section.get("dataset_tag", "")),
+            samples=[request_sample],
+            operating_mode=operating_mode,
+        )
+    except Exception:
+        _render_artifact_unavailable_card(
+            title="Saved Example Walkthrough",
+            guidance=SAVED_WALKTHROUGH_UNAVAILABLE_GUIDANCE,
+        )
+        return
+
+    prediction = predictions[0]
+    probability = float(prediction["predicted_probability"])
+    threshold_used = float(prediction["threshold_used"])
+    decision = "Alert" if int(prediction["predicted_label"]) == 1 else "No Alert"
+    sample_id = str(walkthrough_payload["sample_id"])
+
+    st.markdown("#### Saved Example Walkthrough")
+    with st.container(border=True):
+        st.markdown("<div class='inference-card'>", unsafe_allow_html=True)
+        st.markdown(f"**Sample ID:** {sample_id} (synthetic)")
+        st.markdown(f"**Risk Score:** {probability:.3f}")
+        st.markdown(
+            "**Selected Threshold:** "
+            f"{threshold_used:.3f} ({format_threshold_mode(prediction['operating_mode'])})"
+        )
+        st.markdown(f"**Decision:** {decision}")
+        st.caption(
+            _risk_interpretation(
+                probability=probability,
+                threshold=threshold_used,
+            )
+        )
+        st.caption(str(walkthrough_payload.get("walkthrough_note", "")))
+        st.caption(
+            _deterministic_explanation(
+                sample=request_sample,
+                feature_names=feature_names,
+                predicted_probability=probability,
+                threshold=threshold_used,
+            )
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_live_inference_demo(
     *,
     manifest: dict[str, Any],
     manifest_path: Path,
@@ -887,21 +1078,41 @@ def _render_inference_demo(
     operating_mode: str,
     selected_threshold: float,
     feature_names: list[str],
-    sample_created: bool,
+    walkthrough_payload_path: Path | None,
 ) -> None:
-    st.markdown("<div class='section-title'>Inference Demo</div>", unsafe_allow_html=True)
-    if sample_created:
-        st.info("Generated a compact safe sample set for this session.")
-
     try:
         split_frame = _load_split_samples(str(parquet_path), max_rows)
-    except Exception as exc:
-        st.error("Unable to load sequence windows for inference.")
-        st.caption(sanitize_public_text(str(exc)))
+    except Exception:
+        _render_artifact_unavailable_card(
+            title="Live inference",
+            guidance=(
+                "Parquet-backed windows could not be loaded safely in this deployment package."
+            ),
+        )
+        _render_saved_example_walkthrough(
+            manifest=manifest,
+            manifest_path=manifest_path,
+            operating_mode=operating_mode,
+            feature_names=feature_names,
+            walkthrough_payload_path=walkthrough_payload_path,
+        )
         return
 
     if split_frame.empty:
-        st.warning("No candidate windows are available for inference in the selected source.")
+        _render_artifact_unavailable_card(
+            title="Live inference",
+            guidance=(
+                "No candidate windows were found in the selected parquet source for this "
+                "deployment build."
+            ),
+        )
+        _render_saved_example_walkthrough(
+            manifest=manifest,
+            manifest_path=manifest_path,
+            operating_mode=operating_mode,
+            feature_names=feature_names,
+            walkthrough_payload_path=walkthrough_payload_path,
+        )
         return
 
     st.caption(f"Source: {source_label}. Loaded {len(split_frame)} windows.")
@@ -938,10 +1149,14 @@ def _render_inference_demo(
         "Select sample windows for inference",
         options=options,
         default=options[:default_count],
+        help=(
+            "Choose one or more sample windows to run through the selected checkpoint and "
+            "operating threshold mode."
+        ),
     )
 
     if not selected_options:
-        st.warning("Select at least one sample window to run inference.")
+        st.info("Select at least one sample window to run live inference.")
         return
 
     selected_indices = [option_to_index[item] for item in selected_options]
@@ -960,13 +1175,21 @@ def _render_inference_demo(
             samples=request_samples,
             operating_mode=operating_mode,
         )
-    except SequenceServingError as exc:
-        st.error("Inference request could not be validated.")
-        st.caption(sanitize_public_text(str(exc)))
-        return
-    except Exception as exc:
-        st.error("Inference failed unexpectedly.")
-        st.caption(sanitize_public_text(str(exc)))
+    except (SequenceServingError, Exception):
+        _render_artifact_unavailable_card(
+            title="Live inference",
+            guidance=(
+                "Live inference is unavailable for this deployment package. Showing a saved "
+                "example walkthrough instead."
+            ),
+        )
+        _render_saved_example_walkthrough(
+            manifest=manifest,
+            manifest_path=manifest_path,
+            operating_mode=operating_mode,
+            feature_names=feature_names,
+            walkthrough_payload_path=walkthrough_payload_path,
+        )
         return
 
     st.success("Inference completed successfully.")
@@ -1033,6 +1256,84 @@ def _render_inference_demo(
             st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _render_inference_demo(
+    *,
+    manifest: dict[str, Any],
+    manifest_path: Path,
+    public_mode: bool,
+    inference_source: DemoInferenceSource,
+    max_rows: int,
+    operating_mode: str,
+    selected_threshold: float,
+    feature_names: list[str],
+) -> None:
+    st.markdown("<div class='section-title'>Inference Demo</div>", unsafe_allow_html=True)
+    st.caption(
+        f"Current operating mode {format_threshold_mode(operating_mode)} applies threshold "
+        f"{selected_threshold:.3f}."
+    )
+
+    if inference_source.source_kind == "walkthrough":
+        st.info(
+            "Live sequence-window artifacts are unavailable in this deployment, so this panel "
+            "runs in Saved Example Walkthrough mode."
+        )
+        _render_saved_example_walkthrough(
+            manifest=manifest,
+            manifest_path=manifest_path,
+            operating_mode=operating_mode,
+            feature_names=feature_names,
+            walkthrough_payload_path=inference_source.walkthrough_payload_path,
+        )
+        return
+
+    if inference_source.source_kind == "unavailable" or inference_source.parquet_path is None:
+        _render_artifact_unavailable_card(
+            title="Inference demo",
+            guidance=(
+                f"{SAVED_WALKTHROUGH_UNAVAILABLE_GUIDANCE} "
+                f"{inference_source.reason or ''}"
+            ).strip(),
+        )
+        return
+
+    _render_live_inference_demo(
+        manifest=manifest,
+        manifest_path=manifest_path,
+        public_mode=public_mode,
+        parquet_path=inference_source.parquet_path,
+        source_label=inference_source.source_label,
+        max_rows=max_rows,
+        operating_mode=operating_mode,
+        selected_threshold=selected_threshold,
+        feature_names=feature_names,
+        walkthrough_payload_path=inference_source.walkthrough_payload_path,
+    )
+
+
+def _render_explainability_section(
+    *,
+    feature_importance_frame: pd.DataFrame | None,
+) -> None:
+    st.markdown("<div class='section-title'>Model Explainability</div>", unsafe_allow_html=True)
+    if feature_importance_frame is None or feature_importance_frame.empty:
+        _render_artifact_unavailable_card(
+            title="Explainability",
+            guidance=(
+                "Feature-importance artifacts were not bundled for this deployment. Planned next "
+                "improvement: package artifact-backed feature attribution summaries."
+            ),
+        )
+        return
+
+    explainability_frame = feature_importance_frame.copy()
+    st.caption("Top artifact-backed feature-importance signals from packaged analysis outputs.")
+    st.dataframe(explainability_frame, width="stretch", hide_index=True)
+
+    chart_frame = explainability_frame.set_index("Feature")
+    st.bar_chart(chart_frame[["Importance"]], height=280)
+
+
 def _render_credibility_section(
     *,
     manifest: dict[str, Any],
@@ -1053,7 +1354,7 @@ def _render_credibility_section(
     )
     serving_ready = set(threshold_modes) == {"default", "balanced", "high_recall"}
 
-    cards = [
+    cards: list[tuple[str, str, str]] = [
         ("Selected Model", "Ready", "Selected manifest and checkpoint validation passed."),
         (
             "Calibration Sync",
@@ -1074,8 +1375,9 @@ def _render_credibility_section(
             f"{len(plot_paths)} available",
             "Plot artifacts discovered from calibration outputs.",
         ),
-        ("Automated Tests", tests_status, tests_detail),
     ]
+    if tests_status != "Not available":
+        cards.append(("Automated Tests", tests_status, tests_detail))
 
     columns = st.columns(len(cards))
     for column, (title, value, subtitle) in zip(columns, cards, strict=True):
@@ -1109,9 +1411,27 @@ def main() -> None:
             st.caption("Public-safe dataset mode is active.")
         split = "validation"
         if not public_mode:
-            split = st.selectbox("Evaluation split", options=["validation", "test"], index=0)
+            split = st.selectbox(
+                "Evaluation split",
+                options=["validation", "test"],
+                index=0,
+                help=(
+                    "Select which packaged evaluation split to inspect for operational summary "
+                    "and live inference windows."
+                ),
+            )
 
-        max_rows = st.slider("Rows to load", min_value=20, max_value=1000, value=200, step=20)
+        max_rows = st.slider(
+            "Rows to load",
+            min_value=20,
+            max_value=1000,
+            value=200,
+            step=20,
+            help=(
+                "Controls how many candidate windows are loaded from packaged parquet artifacts. "
+                "Higher values increase compute time."
+            ),
+        )
 
         manifest_path = resolve_manifest_path(
             settings.selected_sequence_manifest_path,
@@ -1153,27 +1473,20 @@ def main() -> None:
         limit=5,
         public_artifacts_root=public_artifacts_root,
     )
+    feature_importance_frame = load_feature_importance_artifact(
+        manifest_path=startup_status.manifest_path,
+        public_artifacts_root=public_artifacts_root,
+        limit=10,
+    )
 
-    if public_mode:
-        try:
-            parquet_path, sample_created = ensure_demo_sample_parquet(
-                manifest,
-                settings.demo_sample_parquet_path,
-                public_fallback_path=(
-                    public_artifacts_root / "demo" / "sequence_demo_samples.parquet"
-                ),
-            )
-        except Exception as exc:
-            st.error("Unable to prepare public demo samples.")
-            st.caption(sanitize_public_text(str(exc)))
-            st.stop()
-    else:
-        windows_dir = resolve_runtime_path(
-            dataset_section["windows_dir"],
-            anchor=startup_status.manifest_path.parent,
-        )
-        parquet_path = windows_dir / f"{split}.parquet"
-        sample_created = False
+    inference_source = resolve_demo_inference_source(
+        manifest,
+        manifest_path=startup_status.manifest_path,
+        split=split,
+        public_mode=public_mode,
+        bundled_demo_path=Path("assets/demo/sequence_demo_samples.parquet"),
+        walkthrough_payload_path=Path("assets/demo/saved_example_payload.json"),
+    )
 
     threshold_modes = [
         mode for mode in ("default", "balanced", "high_recall") if mode in manifest["thresholds"]
@@ -1193,13 +1506,21 @@ def main() -> None:
     if selected_mode not in threshold_modes:
         selected_mode = threshold_modes[0]
 
+    repo_url = _resolve_repo_url(
+        settings_repo_url=getattr(settings, "public_repo_url", None),
+        project_root=_project_root(),
+    )
+
     _render_hero_section(
         model_family=str(model_section.get("model_family", "unknown")),
         dataset_tag=str(dataset_section.get("dataset_tag", "unknown")),
         window_length=int(model_section.get("window_length", 0)),
         feature_count=len(feature_names),
         status="Ready",
+        repo_url=repo_url,
     )
+
+    _render_why_this_matters()
 
     _render_project_status_strip(
         calibration_synced=calibration_synced,
@@ -1221,8 +1542,6 @@ def main() -> None:
         comparison_frame=comparison_frame,
     )
 
-    source_label = safe_data_source_label(public_mode=public_mode, split=split)
-
     try:
         selected_mode, selected_threshold, duplicate_thresholds = _render_threshold_strategy(
             manifest=manifest
@@ -1231,33 +1550,46 @@ def main() -> None:
         st.error(sanitize_public_text(str(exc)))
         st.stop()
 
-    try:
-        operational_frame = _load_operational_probability_frame(
-            manifest_path=str(startup_status.manifest_path),
-            manifest_mtime=startup_status.manifest_path.stat().st_mtime,
-            dataset_tag=str(dataset_section.get("dataset_tag", "")),
-            parquet_path=str(parquet_path),
-            max_rows=max_rows,
+    operational_source_label = f"{split.capitalize()} evaluation windows"
+    operational_unavailable_reason: str | None = None
+    operational_frame = pd.DataFrame(columns=["Sample", "End Hour", "Observed Label", "Risk Score"])
+
+    windows_dir_value = dataset_section.get("windows_dir")
+    if isinstance(windows_dir_value, str) and windows_dir_value.strip():
+        evaluation_windows_path = resolve_runtime_path(
+            Path(windows_dir_value) / f"{split}.parquet",
+            anchor=startup_status.manifest_path.parent,
         )
-    except SequenceServingError as exc:
-        st.error("Operational summary could not be computed for the selected configuration.")
-        st.caption(sanitize_public_text(str(exc)))
-        operational_frame = pd.DataFrame(
-            columns=["Sample", "End Hour", "Observed Label", "Risk Score"]
-        )
-    except Exception as exc:
-        st.error("Operational summary is temporarily unavailable.")
-        st.caption(sanitize_public_text(str(exc)))
-        operational_frame = pd.DataFrame(
-            columns=["Sample", "End Hour", "Observed Label", "Risk Score"]
+        if evaluation_windows_path.exists():
+            try:
+                operational_frame = _load_operational_probability_frame(
+                    manifest_path=str(startup_status.manifest_path),
+                    manifest_mtime=startup_status.manifest_path.stat().st_mtime,
+                    dataset_tag=str(dataset_section.get("dataset_tag", "")),
+                    parquet_path=str(evaluation_windows_path),
+                    max_rows=max_rows,
+                )
+            except Exception:
+                operational_unavailable_reason = (
+                    "Packaged evaluation windows were detected but could not be processed in this "
+                    "deployment environment."
+                )
+        else:
+            operational_unavailable_reason = (
+                "Packaged evaluation windows were not found for the selected split."
+            )
+    else:
+        operational_unavailable_reason = (
+            "Selected manifest does not define a windows_dir for evaluation split rendering."
         )
 
     _render_operational_summary(
         operational_frame=operational_frame,
         operating_mode=selected_mode,
         applied_threshold=selected_threshold,
-        source_label=source_label,
+        source_label=operational_source_label,
         duplicate_thresholds=duplicate_thresholds,
+        unavailable_reason=operational_unavailable_reason,
     )
 
     _render_evaluation_visuals(
@@ -1265,17 +1597,19 @@ def main() -> None:
         reliability_curve=reliability_curve,
     )
 
+    _render_explainability_section(
+        feature_importance_frame=feature_importance_frame,
+    )
+
     _render_inference_demo(
         manifest=manifest,
         manifest_path=startup_status.manifest_path,
         public_mode=public_mode,
-        parquet_path=parquet_path,
-        source_label=source_label,
+        inference_source=inference_source,
         max_rows=max_rows,
         operating_mode=selected_mode,
         selected_threshold=selected_threshold,
         feature_names=feature_names,
-        sample_created=sample_created,
     )
 
     _render_credibility_section(

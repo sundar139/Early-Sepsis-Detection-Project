@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -27,6 +28,17 @@ class DemoStartupStatus:
     manifest: dict[str, Any]
 
 
+@dataclass(slots=True)
+class DemoInferenceSource:
+    """Resolved source for inference input windows in the public demo."""
+
+    source_kind: Literal["parquet", "walkthrough", "unavailable"]
+    source_label: str
+    parquet_path: Path | None = None
+    walkthrough_payload_path: Path | None = None
+    reason: str | None = None
+
+
 def _resolve_public_manifest_path(
     *,
     base: str | Path | None,
@@ -37,6 +49,157 @@ def _resolve_public_manifest_path(
         project_root=base,
     )
     return (public_root / "models" / "registry" / "selected_model.json").resolve()
+
+
+def _resolve_standard_windows_split_path(
+    manifest: dict[str, Any],
+    *,
+    manifest_path: Path,
+    split: str,
+) -> Path | None:
+    dataset_section = manifest.get("dataset")
+    if not isinstance(dataset_section, dict):
+        return None
+
+    windows_dir_value = dataset_section.get("windows_dir")
+    if not isinstance(windows_dir_value, str) or not windows_dir_value.strip():
+        return None
+
+    windows_dir = resolve_runtime_path(windows_dir_value, anchor=manifest_path.parent)
+    return (windows_dir / f"{split}.parquet").resolve()
+
+
+def resolve_demo_inference_source(
+    manifest: dict[str, Any],
+    *,
+    manifest_path: Path,
+    split: str,
+    public_mode: bool,
+    bundled_demo_path: str | Path = Path("assets/demo/sequence_demo_samples.parquet"),
+    walkthrough_payload_path: str | Path = Path("assets/demo/saved_example_payload.json"),
+) -> DemoInferenceSource:
+    """Resolves inference source order for deployment-safe public demo rendering."""
+
+    bundled_path = resolve_runtime_path(bundled_demo_path, anchor=manifest_path.parent)
+    standard_windows_path = _resolve_standard_windows_split_path(
+        manifest,
+        manifest_path=manifest_path,
+        split=split,
+    )
+
+    parquet_candidates: list[tuple[str, Path]] = []
+    if public_mode:
+        parquet_candidates.append(("Bundled demo artifact", bundled_path))
+        if standard_windows_path is not None:
+            parquet_candidates.append((f"Evaluation {split} windows", standard_windows_path))
+    else:
+        if standard_windows_path is not None:
+            parquet_candidates.append((f"Evaluation {split} windows", standard_windows_path))
+        parquet_candidates.append(("Bundled demo artifact", bundled_path))
+
+    for source_label, source_path in parquet_candidates:
+        if source_path.exists() and source_path.is_file():
+            return DemoInferenceSource(
+                source_kind="parquet",
+                source_label=source_label,
+                parquet_path=source_path,
+            )
+
+    resolved_walkthrough_payload = resolve_runtime_path(
+        walkthrough_payload_path,
+        anchor=manifest_path.parent,
+    )
+    if resolved_walkthrough_payload.exists() and resolved_walkthrough_payload.is_file():
+        return DemoInferenceSource(
+            source_kind="walkthrough",
+            source_label="Saved Example Walkthrough",
+            walkthrough_payload_path=resolved_walkthrough_payload,
+            reason=(
+                "Live parquet-backed windows are unavailable in this deployment package."
+            ),
+        )
+
+    return DemoInferenceSource(
+        source_kind="unavailable",
+        source_label="Inference unavailable",
+        reason=(
+            "No bundled demo parquet, evaluation windows, or saved walkthrough payload "
+            "is available."
+        ),
+    )
+
+
+def build_saved_example_walkthrough_sample(
+    manifest: dict[str, Any],
+    payload_path: str | Path,
+) -> dict[str, Any]:
+    """Builds one synthetic-safe walkthrough sample from a saved deployment payload."""
+
+    resolved_payload_path = resolve_runtime_path(payload_path)
+    payload: dict[str, Any] = {}
+    try:
+        payload_candidate = json.loads(resolved_payload_path.read_text(encoding="utf-8"))
+        if isinstance(payload_candidate, dict):
+            payload = payload_candidate
+    except (OSError, ValueError):
+        payload = {}
+
+    model_section = manifest.get("model", {})
+    expected_window = max(int(model_section.get("window_length", 8)), 1)
+    expected_input_dim = max(int(model_section.get("input_dim", 1)), 1)
+    expected_static_dim = max(int(model_section.get("static_dim", 0)), 0)
+
+    sample_id_value = str(payload.get("sample_id", "DS-EX-001")).strip()
+    sample_id = sample_id_value if sample_id_value else "DS-EX-001"
+    if not sample_id.startswith("DS-"):
+        sample_id = f"DS-{sample_id}"
+
+    end_hour = int(payload.get("end_hour", expected_window))
+    label = 1 if int(payload.get("label", 0)) == 1 else 0
+
+    base_value = float(payload.get("base_value", 0.16))
+    trend_delta = float(payload.get("trend_delta", 0.22))
+    trend_feature_index = int(payload.get("trend_feature_index", 0))
+    trend_feature_index = min(max(trend_feature_index, 0), expected_input_dim - 1)
+
+    feature_matrix = np.full((expected_window, expected_input_dim), base_value, dtype=np.float32)
+    feature_matrix[:, trend_feature_index] += np.linspace(
+        0.0,
+        trend_delta,
+        expected_window,
+        dtype=np.float32,
+    )
+    missing_mask = np.zeros((expected_window, expected_input_dim), dtype=np.float32)
+
+    static_template = payload.get("static_template")
+    static_features: list[float]
+    if expected_static_dim > 0:
+        if isinstance(static_template, list) and len(static_template) == expected_static_dim:
+            static_features = np.asarray(static_template, dtype=np.float32).tolist()
+        else:
+            static_features = np.zeros((expected_static_dim,), dtype=np.float32).tolist()
+    else:
+        static_features = []
+
+    walkthrough_note = str(
+        payload.get(
+            "walkthrough_note",
+            "Saved synthetic walkthrough sample bundled for deployment-safe demonstration.",
+        )
+    )
+
+    return {
+        "sample_id": sample_id,
+        "label": label,
+        "walkthrough_note": walkthrough_note,
+        "request_sample": {
+            "patient_id": sample_id,
+            "end_hour": end_hour,
+            "features": feature_matrix.tolist(),
+            "missing_mask": missing_mask.tolist(),
+            "static_features": static_features,
+        },
+    }
 
 
 def resolve_manifest_path(

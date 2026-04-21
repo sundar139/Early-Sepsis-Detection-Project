@@ -37,6 +37,7 @@ class AppSettings(BaseSettings):
         default=Path("artifacts/models/registry/selected_model.json")
     )
     public_artifacts_dir: Path = Field(default=Path("public_artifacts"))
+    public_repo_url: str | None = Field(default=None)
     serving_default_operating_mode: str = Field(default="default")
     demo_public_mode: bool = Field(default=False)
     demo_sample_parquet_path: Path = Field(default=Path("data/demo/sequence_demo_samples.parquet"))

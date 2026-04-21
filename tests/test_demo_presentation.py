@@ -7,11 +7,13 @@ import pandas as pd
 import pytest
 
 from early_sepsis.demo.presentation import (
+    build_metric_annotation,
     collect_metric_snapshot,
     collect_plot_artifacts,
     compute_operational_metrics,
     find_duplicate_threshold_modes,
     load_experiment_comparison,
+    load_feature_importance_artifact,
     load_reliability_curve,
     resolve_calibration_summary,
     safe_data_source_label,
@@ -105,6 +107,16 @@ def test_collect_metric_snapshot_prefers_calibration_metrics() -> None:
 def test_safe_data_source_label_uses_public_safe_labels() -> None:
     assert safe_data_source_label(public_mode=True, split="validation") == "Public demo sample"
     assert safe_data_source_label(public_mode=False, split="test") == "Demo Test split"
+
+
+def test_build_metric_annotation_includes_direction_and_context() -> None:
+    brier_annotation = build_metric_annotation("brier_score")
+    ece_annotation = build_metric_annotation("expected_calibration_error")
+
+    assert brier_annotation.startswith("Lower is better")
+    assert "probabilities" in brier_annotation.lower()
+    assert ece_annotation.startswith("Lower is better")
+    assert "predicted risk" in ece_annotation.lower()
 
 
 def test_compute_operational_metrics_changes_with_threshold_mode() -> None:
@@ -281,6 +293,32 @@ def test_load_experiment_comparison_uses_public_artifacts_fallback(
     assert comparison.iloc[0]["Run"] == "run_a"
 
 
+def test_load_feature_importance_artifact_uses_public_artifacts_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SEPSIS_PROJECT_ROOT", str(tmp_path))
+
+    public_root = tmp_path / "public_artifacts"
+    importance_path = public_root / "analysis" / "explainability" / "feature_importance.json"
+    importance_path.parent.mkdir(parents=True, exist_ok=True)
+    importance_path.write_text(
+        '{"HR_trend": 0.42, "Lactate_slope": 0.33, "Respiration_variability": 0.11}',
+        encoding="utf-8",
+    )
+
+    frame = load_feature_importance_artifact(
+        manifest_path=tmp_path / "artifacts" / "models" / "registry" / "selected_model.json",
+        public_artifacts_root=public_root,
+        limit=2,
+    )
+
+    assert frame is not None
+    assert list(frame.columns) == ["Feature", "Importance"]
+    assert len(frame) == 2
+    assert frame.iloc[0]["Feature"] == "HR_trend"
+
+
 def test_streamlit_app_uses_public_facing_wording_without_raw_json() -> None:
     app_path = Path(__file__).resolve().parents[1] / "src" / "early_sepsis" / "demo" / "app.py"
     app_source = app_path.read_text(encoding="utf-8")
@@ -298,6 +336,8 @@ def test_streamlit_app_uses_public_facing_wording_without_raw_json() -> None:
     assert "DS-" in app_source
     assert "artifact-unavailable-card" in app_source
     assert "Generate calibration analysis outputs to include this panel." in app_source
+    assert "Unable to load sequence windows for inference" not in app_source
+    assert "Saved Example Walkthrough mode" in app_source
     assert "Threshold-Invariant Evaluation Summary" in app_source
     assert "Threshold-Dependent Operational Summary" in app_source
     assert "find_duplicate_threshold_modes" in app_source
