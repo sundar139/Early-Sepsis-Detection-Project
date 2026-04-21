@@ -6,7 +6,7 @@
 
 Production-style machine learning repository for early sepsis risk prediction from ICU time-series data, with deterministic preprocessing, sequence modeling, manifest-based serving, and deployment-safe public demo packaging.
 
-## 1. Executive Summary
+## Executive Summary
 
 This repository implements an end-to-end workflow for early sepsis detection:
 
@@ -19,14 +19,14 @@ This repository implements an end-to-end workflow for early sepsis detection:
 
 Real clinical source data is intentionally excluded from version control.
 
-## 2. Clinical Scope and Safety Boundaries
+## Clinical Scope and Safety Boundaries
 
 - Intended use: research, engineering validation, and portfolio demonstration
 - Not intended use: direct clinical decision support
 - Demo output is explanatory and operationally oriented, not treatment guidance
 - Public deployment paths sanitize sensitive filesystem details when environment is non-development
 
-## 3. Implemented Capabilities
+## Implemented Capabilities
 
 - Data ingestion and validation: [src/early_sepsis/data/ingestion.py](src/early_sepsis/data/ingestion.py)
 - Deterministic split and preprocessing: [src/early_sepsis/data/pipeline.py](src/early_sepsis/data/pipeline.py)
@@ -38,7 +38,7 @@ Real clinical source data is intentionally excluded from version control.
 - API serving: [src/early_sepsis/serving/api.py](src/early_sepsis/serving/api.py)
 - Streamlit demo and startup checks: [src/early_sepsis/demo/app.py](src/early_sepsis/demo/app.py), [src/early_sepsis/demo/startup.py](src/early_sepsis/demo/startup.py)
 
-## 4. Architecture
+## Architecture
 
 | Layer | Primary modules | Purpose |
 |---|---|---|
@@ -51,7 +51,7 @@ Real clinical source data is intentionally excluded from version control.
 | Serving | [src/early_sepsis/serving/sequence_service.py](src/early_sepsis/serving/sequence_service.py), [src/early_sepsis/serving/api.py](src/early_sepsis/serving/api.py) | Manifest-backed inference with dataset and shape guardrails |
 | Presentation | [src/early_sepsis/demo/app.py](src/early_sepsis/demo/app.py) | Public-safe dashboard with artifact-backed visuals |
 
-## 5. End-to-End Workflow
+## End-to-End Workflow
 
 1. Validate and ingest raw data.
 2. Split patients into train/validation/test cohorts.
@@ -63,7 +63,7 @@ Real clinical source data is intentionally excluded from version control.
 8. Serve through FastAPI and/or present through Streamlit.
 9. Build compact public artifact bundle for deployment.
 
-## 6. Supported Data Inputs
+## Supported Data Inputs
 
 ### PhysioNet-style PSV directory
 
@@ -90,7 +90,7 @@ Requirements enforced by ingestion:
 
 Synthetic test/demo assets are included under [tests/fixtures](tests/fixtures), [assets/demo](assets/demo), and [data/demo](data/demo). Restricted source clinical data is not committed.
 
-## 7. Local Environment Setup
+## Local Environment Setup
 
 Run from repository root.
 
@@ -110,7 +110,7 @@ python -m pip install --upgrade pip
 pip install -e .[dev]
 ```
 
-## 8. Configuration and Runtime Settings
+## Configuration and Runtime Settings
 
 Base settings class: [src/early_sepsis/settings.py](src/early_sepsis/settings.py)
 
@@ -135,7 +135,7 @@ Config files:
 - [configs/api.yaml](configs/api.yaml)
 - [configs/orchestration.yaml](configs/orchestration.yaml)
 
-## 9. Quickstart with Synthetic Data
+## Quickstart with Synthetic Data
 
 Generate synthetic ICU data, preprocess, window, and run a short training smoke flow:
 
@@ -146,7 +146,7 @@ uv run python scripts/create_windows.py --processed-dir artifacts/processed_cli_
 uv run python scripts/train_sequence.py --windows-dir artifacts/windows_cli_smoke --output-dir artifacts/models/sequence_cli_smoke --model-type gru --epochs 2 --batch-size 64 --disable-mlflow
 ```
 
-## 10. Raw Data Validation and Preprocessing
+## Raw Data Validation and Preprocessing
 
 Validate source files:
 
@@ -162,7 +162,7 @@ uv run python scripts/preprocess_data.py --config configs/data_pipeline.yaml --r
 uv run python scripts/print_split_summary.py --processed-dir artifacts/processed
 ```
 
-## 11. Window Dataset Generation
+## Window Dataset Generation
 
 Create train/validation/test window parquet datasets:
 
@@ -172,7 +172,7 @@ uv run python scripts/create_windows.py --processed-dir artifacts/processed --ou
 
 Optional toggles are available in CLI for masks/static features and padding mode.
 
-## 12. Sequence Modeling: Train, Evaluate, Predict
+## Sequence Modeling: Train, Evaluate, Predict
 
 Train sequence model:
 
@@ -199,7 +199,7 @@ Tabular baseline path (used by `/predict` endpoint):
 uv run python scripts/train_local.py --data-path tests/fixtures/synthetic_tabular.csv --dataset-format csv
 ```
 
-## 13. Hyperparameter Tuning and Experiment Comparison
+## Hyperparameter Tuning and Experiment Comparison
 
 Run Optuna tuning:
 
@@ -213,7 +213,7 @@ Aggregate experiments:
 uv run python scripts/compare_experiments.py --model-root artifacts/models --output-dir artifacts/analysis/experiments
 ```
 
-## 14. Selected Model Manifest and Calibration Workflow
+## Selected Model Manifest and Calibration Workflow
 
 Select best run into manifest:
 
@@ -245,7 +245,7 @@ Evaluation interpretation in this project:
 - Threshold-invariant metrics: AUROC, AUPRC, Brier score, Expected Calibration Error, prevalence
 - Threshold-dependent outputs: predicted labels, confusion matrix counts, precision, recall, F1, alert rate
 
-## 15. FastAPI Serving and Inference Contracts
+## FastAPI Serving and Inference Contracts
 
 Start API:
 
@@ -274,7 +274,7 @@ Sequence inference request (`/predict-sequence`):
 uv run python -c "import json,httpx,pandas as pd; m=json.load(open('artifacts/models/registry/selected_model.json','r',encoding='utf-8')); tag=m['dataset']['dataset_tag']; df=pd.read_parquet(f\"{m['dataset']['windows_dir']}/validation.parquet\"); r=df.iloc[0]; payload={'dataset_tag':tag,'operating_mode':'balanced','samples':[{'patient_id':r['patient_id'],'end_hour':int(r['end_hour']),'features':r['features'].tolist(),'missing_mask':r['missing_mask'].tolist() if r['missing_mask'] is not None else None,'static_features':r['static_features'].tolist() if r['static_features'] is not None else None}]}; resp=httpx.post('http://127.0.0.1:8000/predict-sequence',json=payload,timeout=60.0); print(resp.status_code); print(resp.text)"
 ```
 
-## 16. Streamlit Demo Behavior
+## Streamlit Demo Behavior
 
 Start demo:
 
@@ -308,7 +308,7 @@ Operational summary source order:
 - `<manifest.dataset.windows_dir>/<split>.parquet`
 - current inference parquet source (if available)
 
-## 17. Deployment-Safe Artifact Bundling
+## Deployment-Safe Artifact Bundling
 
 Curate compact demo windows and operational subset:
 
@@ -330,7 +330,7 @@ uv run python scripts/prepare_public_artifacts.py --manifest-path artifacts/mode
 
 Required deployment files are documented in [public_artifacts/README.md](public_artifacts/README.md).
 
-## 18. Deployment Options
+## Deployment Options
 
 ### Streamlit Community Cloud
 
@@ -365,7 +365,7 @@ docker run --rm -p 8501:8501 -e PORT=8501 early-sepsis-streamlit
 docker compose -f docker/docker-compose.yml up --build api
 ```
 
-## 19. Testing and Quality Gates
+## Testing and Quality Gates
 
 Run full test suite:
 
@@ -386,7 +386,7 @@ uv run ruff check .
 uv run mypy src
 ```
 
-## 20. Limitations, Improvement Backlog, and License
+## Limitations, Improvement Backlog, and License
 
 Current limitations:
 
@@ -401,7 +401,6 @@ Practical improvement backlog:
 - add richer model comparison visualization overlays for operating mode review
 - harden deployment CI for artifact integrity checks before release
 
-License note:
+## License
 
-- `pyproject.toml` declares MIT license metadata
-- a standalone `LICENSE` file is not currently committed
+This project is licensed under the MIT License. See the [LICENSE](./LICENSE) file for details.
