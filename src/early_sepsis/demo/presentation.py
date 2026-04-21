@@ -477,6 +477,22 @@ def load_reliability_curve(
         if required_columns.issubset(frame.columns):
             return frame[["bin", "bin_accuracy", "bin_confidence", "sample_count"]]
 
+        alternate_columns = {
+            "bin_index",
+            "observed_positive_rate",
+            "mean_predicted_probability",
+            "sample_count",
+        }
+        if alternate_columns.issubset(frame.columns):
+            normalized = frame.rename(
+                columns={
+                    "bin_index": "bin",
+                    "observed_positive_rate": "bin_accuracy",
+                    "mean_predicted_probability": "bin_confidence",
+                }
+            )
+            return normalized[["bin", "bin_accuracy", "bin_confidence", "sample_count"]]
+
     return None
 
 

@@ -6,6 +6,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from early_sepsis.demo.inference_debug import count_unique_demo_windows
 from early_sepsis.demo.presentation import (
     build_metric_annotation,
     collect_metric_snapshot,
@@ -261,6 +262,38 @@ def test_load_reliability_curve_uses_public_artifacts_fallback(
     assert list(frame.columns) == ["bin", "bin_accuracy", "bin_confidence", "sample_count"]
 
 
+def test_load_reliability_curve_normalizes_alternate_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SEPSIS_PROJECT_ROOT", str(tmp_path))
+
+    public_root = tmp_path / "public_artifacts"
+    reliability_path = public_root / "analysis" / "calibration" / "reliability_curve.csv"
+    reliability_path.parent.mkdir(parents=True, exist_ok=True)
+    reliability_path.write_text(
+        (
+            "bin_index,bin_lower,bin_upper,sample_count,"
+            "mean_predicted_probability,observed_positive_rate\n"
+            "0,0.0,0.1,12,0.08,0.04\n"
+            "1,0.1,0.2,10,0.16,0.09\n"
+        ),
+        encoding="utf-8",
+    )
+
+    frame = load_reliability_curve(
+        calibration_summary_path=None,
+        manifest_path=tmp_path / "artifacts" / "models" / "registry" / "selected_model.json",
+        public_artifacts_root=public_root,
+    )
+
+    assert frame is not None
+    assert list(frame.columns) == ["bin", "bin_accuracy", "bin_confidence", "sample_count"]
+    assert frame.iloc[0]["bin"] == 0
+    assert frame.iloc[0]["bin_accuracy"] == pytest.approx(0.04)
+    assert frame.iloc[1]["bin_confidence"] == pytest.approx(0.16)
+
+
 def test_load_experiment_comparison_uses_public_artifacts_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -342,5 +375,56 @@ def test_streamlit_app_uses_public_facing_wording_without_raw_json() -> None:
     assert "Threshold-Dependent Operational Summary" in app_source
     assert "find_duplicate_threshold_modes" in app_source
     assert "operational-grid" in app_source
+    assert (
+        "if feature_importance_frame is not None and not feature_importance_frame.empty"
+        in app_source
+    )
+    assert "Feature-importance artifacts were not bundled for this deployment" not in app_source
     assert "C:\\\\" not in app_source
     assert "/Users/" not in app_source
+
+
+def test_curated_demo_bundle_uses_synthetic_ids_and_unique_windows() -> None:
+    demo_path = (
+        Path(__file__).resolve().parents[1]
+        / "assets"
+        / "demo"
+        / "sequence_demo_samples.parquet"
+    )
+    if not demo_path.exists():
+        pytest.skip("Curated demo bundle is not present in this environment.")
+
+    frame = pd.read_parquet(
+        demo_path,
+        columns=["patient_id", "end_hour", "features", "missing_mask", "static_features"],
+    )
+
+    assert not frame.empty
+    assert frame["patient_id"].astype(str).str.startswith("DS-").all()
+
+    samples = [
+        {
+            "patient_id": row.patient_id,
+            "end_hour": int(row.end_hour),
+            "features": row.features,
+            "missing_mask": row.missing_mask,
+            "static_features": row.static_features,
+        }
+        for row in frame.itertuples(index=False)
+    ]
+    assert count_unique_demo_windows(samples) > 1
+
+
+def test_operational_subset_bundle_uses_synthetic_ids_when_available() -> None:
+    subset_path = (
+        Path(__file__).resolve().parents[1]
+        / "assets"
+        / "demo"
+        / "operational_windows_subset.parquet"
+    )
+    if not subset_path.exists():
+        pytest.skip("Operational subset bundle is not present in this environment.")
+
+    frame = pd.read_parquet(subset_path, columns=["patient_id"])
+    assert not frame.empty
+    assert frame["patient_id"].astype(str).str.startswith("DS-").all()

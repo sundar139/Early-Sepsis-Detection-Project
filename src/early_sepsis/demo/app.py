@@ -266,6 +266,18 @@ def _apply_theme() -> None:
             break-inside: avoid;
             page-break-inside: avoid;
         }
+        .calibration-explainer-card {
+            background: rgba(22, 34, 56, 0.9);
+            border: 1px solid rgba(126, 160, 221, 0.38);
+            border-radius: 12px;
+            padding: 0.8rem 0.9rem;
+            margin-top: 0.45rem;
+            color: #ccdaf1;
+            font-size: 0.86rem;
+            line-height: 1.48;
+            break-inside: avoid;
+            page-break-inside: avoid;
+        }
         .card-title {
             font-size: 0.82rem;
             font-weight: 520;
@@ -318,6 +330,7 @@ def _apply_theme() -> None:
             .visual-card,
             .visual-card--large,
             .artifact-unavailable-card,
+            .calibration-explainer-card,
             [data-testid="stImage"],
             [data-testid="stLineChart"],
             [data-testid="stDataFrame"] {
@@ -351,6 +364,7 @@ def _apply_theme() -> None:
             .hero-panel,
             .surface-card,
             .artifact-unavailable-card,
+            .calibration-explainer-card,
             .status-chip {
                 border-color: #a6a6a6 !important;
                 background: #ffffff !important;
@@ -425,17 +439,66 @@ def _load_operational_probability_frame(
 
 
 def _row_to_request_sample(row: pd.Series) -> dict[str, Any]:
+    def _to_matrix_list(value: Any) -> list[list[float]]:
+        array = np.asarray(value)
+        if array.ndim == 1 and array.dtype == object:
+            array = np.asarray(array.tolist(), dtype=np.float32)
+        else:
+            array = np.asarray(value, dtype=np.float32)
+
+        if array.ndim != 2:
+            msg = "Expected a 2D matrix payload for inference input"
+            raise ValueError(msg)
+
+        return array.tolist()
+
+    def _to_vector_list(value: Any) -> list[float] | None:
+        if value is None:
+            return None
+
+        array = np.asarray(value, dtype=np.float32)
+        if array.ndim != 1:
+            msg = "Expected a 1D static-feature vector"
+            raise ValueError(msg)
+
+        return array.tolist()
+
     return {
         "patient_id": row.get("patient_id"),
         "end_hour": int(row.get("end_hour", 0)),
-        "features": np.asarray(row["features"]).tolist(),
-        "missing_mask": np.asarray(row["missing_mask"]).tolist()
-        if row.get("missing_mask") is not None
-        else None,
-        "static_features": np.asarray(row["static_features"]).tolist()
-        if row.get("static_features") is not None
-        else None,
+        "features": _to_matrix_list(row.get("features")),
+        "missing_mask": _to_matrix_list(row.get("missing_mask")),
+        "static_features": _to_vector_list(row.get("static_features")),
     }
+
+
+def _build_inference_result_frame(
+    *,
+    preview_rows: list[dict[str, Any]],
+    predictions: list[dict[str, Any]],
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for preview_row, prediction in zip(preview_rows, predictions, strict=True):
+        probability = float(prediction["predicted_probability"])
+        threshold_used = float(prediction["threshold_used"])
+        predicted_label = int(prediction["predicted_label"])
+        rows.append(
+            {
+                "Sample": preview_row["Sample"],
+                "Sample ID": preview_row["Sample ID"],
+                "End Hour": prediction["end_hour"],
+                "Risk Score": round(probability, 6),
+                "Predicted Class": "Alert" if predicted_label == 1 else "No Alert",
+                "Threshold Mode": format_threshold_mode(prediction["operating_mode"]),
+                "Threshold Used": round(threshold_used, 4),
+                "Interpretation": _risk_interpretation(
+                    probability=probability,
+                    threshold=threshold_used,
+                ),
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 
 def _deterministic_explanation(
@@ -938,6 +1001,54 @@ def _render_operational_summary(
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _resolve_operational_source(
+    *,
+    public_artifacts_root: Path,
+    manifest_path: Path,
+    dataset_section: dict[str, Any],
+    split: str,
+    inference_source: DemoInferenceSource,
+) -> tuple[str, Path | None, str | None]:
+    candidates: list[tuple[str, Path]] = [
+        (
+            "Deployment operational subset",
+            public_artifacts_root / "demo" / "operational_windows_subset.parquet",
+        ),
+        (
+            "Bundled operational subset",
+            resolve_runtime_path(
+                Path("assets/demo/operational_windows_subset.parquet"),
+                anchor=manifest_path.parent,
+            ),
+        ),
+    ]
+
+    windows_dir_value = dataset_section.get("windows_dir")
+    if isinstance(windows_dir_value, str) and windows_dir_value.strip():
+        candidates.append(
+            (
+                f"{split.capitalize()} evaluation windows",
+                resolve_runtime_path(
+                    Path(windows_dir_value) / f"{split}.parquet",
+                    anchor=manifest_path.parent,
+                ),
+            )
+        )
+
+    if inference_source.parquet_path is not None:
+        candidates.append((inference_source.source_label, inference_source.parquet_path))
+
+    for label, candidate_path in candidates:
+        if candidate_path.exists() and candidate_path.is_file():
+            return label, candidate_path, None
+
+    return (
+        "Deployment operational subset",
+        None,
+        "No deployment-safe operational subset or evaluation windows were bundled.",
+    )
+
+
 def _render_evaluation_visuals(
     *,
     plot_paths: dict[str, Path],
@@ -980,17 +1091,24 @@ def _render_evaluation_visuals(
                 )
                 st.caption("Reliability curve generated from artifact-backed bin statistics.")
             else:
-                guidance = (
-                    "This artifact was not found for the selected model package. "
-                    "Generate calibration analysis outputs to include this panel."
-                )
                 if plot_key == "reliability_curve":
-                    guidance = CALIBRATION_UNAVAILABLE_GUIDANCE
-
-                _render_artifact_unavailable_card(
-                    title=PLOT_TITLES[plot_key],
-                    guidance=guidance,
-                )
+                    st.markdown(
+                        (
+                            "<div class='calibration-explainer-card'>"
+                            "<strong>Calibration Reliability Overview</strong><br>"
+                            f"{CALIBRATION_UNAVAILABLE_GUIDANCE}"
+                            "</div>"
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    _render_artifact_unavailable_card(
+                        title=PLOT_TITLES[plot_key],
+                        guidance=(
+                            "This artifact was not found for the selected model package. "
+                            "Generate calibration analysis outputs to include this panel."
+                        ),
+                    )
 
             st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1194,31 +1312,11 @@ def _render_live_inference_demo(
 
     st.success("Inference completed successfully.")
 
-    result_rows: list[dict[str, Any]] = []
-    for preview_row, prediction in zip(
-        selected_preview.to_dict("records"),
-        predictions,
-        strict=True,
-    ):
-        probability = float(prediction["predicted_probability"])
-        threshold_used = float(prediction["threshold_used"])
-        predicted_label = int(prediction["predicted_label"])
-        row_payload: dict[str, Any] = {
-            "Sample": preview_row["Sample"],
-            "Sample ID": preview_row["Sample ID"],
-            "End Hour": prediction["end_hour"],
-            "Risk Score": round(probability, 4),
-            "Predicted Class": "Alert" if predicted_label == 1 else "No Alert",
-            "Threshold Mode": format_threshold_mode(prediction["operating_mode"]),
-            "Threshold Used": round(threshold_used, 4),
-            "Interpretation": _risk_interpretation(
-                probability=probability,
-                threshold=threshold_used,
-            ),
-        }
-        result_rows.append(row_payload)
-
-    result_frame = pd.DataFrame(result_rows)
+    selected_preview_records = selected_preview.to_dict("records")
+    result_frame = _build_inference_result_frame(
+        preview_rows=selected_preview_records,
+        predictions=predictions,
+    )
     st.dataframe(result_frame, width="stretch", hide_index=True)
     alert_count = int((result_frame["Predicted Class"] == "Alert").sum())
     st.caption(
@@ -1229,7 +1327,7 @@ def _render_live_inference_demo(
     st.markdown("#### Score Explanations")
     for sample, preview_row, prediction in zip(
         request_samples,
-        selected_preview.to_dict("records"),
+        selected_preview_records,
         predictions,
         strict=True,
     ):
@@ -1316,16 +1414,6 @@ def _render_explainability_section(
     feature_importance_frame: pd.DataFrame | None,
 ) -> None:
     st.markdown("<div class='section-title'>Model Explainability</div>", unsafe_allow_html=True)
-    if feature_importance_frame is None or feature_importance_frame.empty:
-        _render_artifact_unavailable_card(
-            title="Explainability",
-            guidance=(
-                "Feature-importance artifacts were not bundled for this deployment. Planned next "
-                "improvement: package artifact-backed feature attribution summaries."
-            ),
-        )
-        return
-
     explainability_frame = feature_importance_frame.copy()
     st.caption("Top artifact-backed feature-importance signals from packaged analysis outputs.")
     st.dataframe(explainability_frame, width="stretch", hide_index=True)
@@ -1550,38 +1638,37 @@ def main() -> None:
         st.error(sanitize_public_text(str(exc)))
         st.stop()
 
-    operational_source_label = f"{split.capitalize()} evaluation windows"
+    operational_source_label = "Deployment operational subset"
     operational_unavailable_reason: str | None = None
     operational_frame = pd.DataFrame(columns=["Sample", "End Hour", "Observed Label", "Risk Score"])
 
-    windows_dir_value = dataset_section.get("windows_dir")
-    if isinstance(windows_dir_value, str) and windows_dir_value.strip():
-        evaluation_windows_path = resolve_runtime_path(
-            Path(windows_dir_value) / f"{split}.parquet",
-            anchor=startup_status.manifest_path.parent,
-        )
-        if evaluation_windows_path.exists():
-            try:
-                operational_frame = _load_operational_probability_frame(
-                    manifest_path=str(startup_status.manifest_path),
-                    manifest_mtime=startup_status.manifest_path.stat().st_mtime,
-                    dataset_tag=str(dataset_section.get("dataset_tag", "")),
-                    parquet_path=str(evaluation_windows_path),
-                    max_rows=max_rows,
-                )
-            except Exception:
-                operational_unavailable_reason = (
-                    "Packaged evaluation windows were detected but could not be processed in this "
-                    "deployment environment."
-                )
-        else:
-            operational_unavailable_reason = (
-                "Packaged evaluation windows were not found for the selected split."
+    (
+        operational_source_label,
+        operational_source_path,
+        operational_unavailable_reason,
+    ) = _resolve_operational_source(
+        public_artifacts_root=public_artifacts_root,
+        manifest_path=startup_status.manifest_path,
+        dataset_section=dataset_section,
+        split=split,
+        inference_source=inference_source,
+    )
+
+    if operational_source_path is not None:
+        try:
+            operational_frame = _load_operational_probability_frame(
+                manifest_path=str(startup_status.manifest_path),
+                manifest_mtime=startup_status.manifest_path.stat().st_mtime,
+                dataset_tag=str(dataset_section.get("dataset_tag", "")),
+                parquet_path=str(operational_source_path),
+                max_rows=max_rows,
             )
-    else:
-        operational_unavailable_reason = (
-            "Selected manifest does not define a windows_dir for evaluation split rendering."
-        )
+            operational_unavailable_reason = None
+        except Exception:
+            operational_unavailable_reason = (
+                "A packaged operational source was detected but could not be processed in this "
+                "deployment environment."
+            )
 
     _render_operational_summary(
         operational_frame=operational_frame,
@@ -1597,9 +1684,10 @@ def main() -> None:
         reliability_curve=reliability_curve,
     )
 
-    _render_explainability_section(
-        feature_importance_frame=feature_importance_frame,
-    )
+    if feature_importance_frame is not None and not feature_importance_frame.empty:
+        _render_explainability_section(
+            feature_importance_frame=feature_importance_frame,
+        )
 
     _render_inference_demo(
         manifest=manifest,

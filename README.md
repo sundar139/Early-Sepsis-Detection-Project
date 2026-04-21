@@ -334,6 +334,13 @@ order is:
 2. `<manifest.dataset.windows_dir>/<split>.parquet`
 3. `assets/demo/saved_example_payload.json` (single-sample saved walkthrough)
 
+Operational-summary fallback order is:
+
+1. `public_artifacts/demo/operational_windows_subset.parquet`
+2. `assets/demo/operational_windows_subset.parquet`
+3. `<manifest.dataset.windows_dir>/<split>.parquet`
+4. current inference parquet source (if available)
+
 If none of these sources is available, the inference section remains visible with a polished
 artifact-unavailable card instead of a runtime traceback.
 
@@ -361,6 +368,9 @@ Required for model-backed demo inference:
 
 - `public_artifacts/models/registry/selected_model.json`
 - `public_artifacts/models/checkpoints/best_checkpoint.pt`
+- `public_artifacts/demo/sequence_demo_samples.parquet`
+- `public_artifacts/demo/operational_windows_subset.parquet`
+- `public_artifacts/demo/saved_example_payload.json`
 
 Optional for richer UI:
 
@@ -368,13 +378,25 @@ Optional for richer UI:
 - `public_artifacts/analysis/calibration/threshold_recommendations.json`
 - calibration plot images and reliability CSV under `public_artifacts/analysis/calibration/`
 - `public_artifacts/analysis/experiments/sequence_experiment_comparison.csv`
-- `public_artifacts/demo/sequence_demo_samples.parquet`
-- `public_artifacts/demo/saved_example_payload.json`
+- `public_artifacts/analysis/explainability/feature_importance.csv` (or `.json`)
 
 Recommended repository assets for public fallback order:
 
 - `assets/demo/sequence_demo_samples.parquet`
+- `assets/demo/operational_windows_subset.parquet`
 - `assets/demo/saved_example_payload.json`
+
+Curate deployment-safe demo assets from real model probabilities before bundling:
+
+```bash
+uv run python scripts/curate_demo_assets.py --manifest-path artifacts/models/registry/selected_model.json --candidate-rows-per-source 2500 --demo-count 36 --operational-count 600
+```
+
+Audit score diversity and score-table mapping fidelity:
+
+```bash
+uv run python scripts/audit_demo_inference.py --manifest-path public_artifacts/models/registry/selected_model.json --parquet-path assets/demo/sequence_demo_samples.parquet --display-round-decimals 6
+```
 
 Build a compact bundle from local selected artifacts:
 
@@ -387,6 +409,8 @@ The bundle script copies demo fallback assets in this order when available:
 1. `assets/demo/sequence_demo_samples.parquet`
 2. `data/demo/sequence_demo_samples.parquet`
 3. `assets/demo/saved_example_payload.json`
+4. `assets/demo/operational_windows_subset.parquet`
+5. optional feature-importance artifact if present
 
 ### Streamlit Community Cloud
 
@@ -413,6 +437,8 @@ The entrypoint maps these values to the existing `SEPSIS_*` settings at runtime.
 - `Selected checkpoint file is missing`: confirm manifest `selected_run.checkpoint_path` points to a file inside repo.
 - Missing visuals: include calibration artifacts in `public_artifacts/analysis/calibration/`; the app will show a safe unavailable state otherwise.
 - Inference section shows walkthrough-only mode: add `assets/demo/sequence_demo_samples.parquet` for live multi-window inference, or keep `assets/demo/saved_example_payload.json` for single-sample fallback.
+- Operational summary unavailable: add `assets/demo/operational_windows_subset.parquet` and rebuild `public_artifacts/`.
+- Explainability section absent: expected when no real feature-importance artifact is bundled.
 - Import errors in cloud: ensure requirements install completed successfully and Python version matches `runtime.txt`.
 
 Print/PDF note:

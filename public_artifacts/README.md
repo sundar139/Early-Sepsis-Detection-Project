@@ -6,6 +6,9 @@ Required files for model-backed demo inference:
 
 - models/registry/selected_model.json
 - models/checkpoints/best_checkpoint.pt
+- demo/sequence_demo_samples.parquet
+- demo/operational_windows_subset.parquet
+- demo/saved_example_payload.json
 
 Optional files for richer artifact-backed presentation:
 
@@ -17,8 +20,7 @@ Optional files for richer artifact-backed presentation:
 - analysis/calibration/score_distribution.png
 - analysis/calibration/reliability_curve.csv
 - analysis/experiments/sequence_experiment_comparison.csv
-- demo/sequence_demo_samples.parquet
-- demo/saved_example_payload.json
+- analysis/explainability/feature_importance.csv (or .json)
 
 Notes:
 

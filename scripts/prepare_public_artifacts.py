@@ -186,6 +186,16 @@ def main() -> int:
             manifest_path=manifest_path,
         )
 
+    default_calibration_dir = resolve_runtime_path(Path("artifacts/analysis/calibration"))
+    if calibration_summary_source is None:
+        summary_fallback = default_calibration_dir / "calibration_summary.json"
+        if summary_fallback.exists():
+            calibration_summary_source = summary_fallback
+    if recommendations_source is None:
+        recommendations_fallback = default_calibration_dir / "threshold_recommendations.json"
+        if recommendations_fallback.exists():
+            recommendations_source = recommendations_fallback
+
     calibration_dir = output_root / "analysis" / "calibration"
 
     if recommendations_source is not None and recommendations_source.exists():
@@ -214,12 +224,26 @@ def main() -> int:
                     if _copy_file_if_exists(plot_source, plot_target):
                         rewritten_plot_mapping[str(plot_key)] = make_portable_path(plot_target)
                         copied_files.append(make_portable_path(plot_target))
+
+                # Reliability visuals are frequently stored outside plot_paths; prefer bundling
+                # them explicitly when present to keep calibration panel artifact-backed.
+                for reliability_name in ("reliability_curve.png", "reliability_curve.csv"):
+                    reliability_source = calibration_summary_source.parent / reliability_name
+                    reliability_target = calibration_dir / reliability_name
+                    if _copy_file_if_exists(reliability_source, reliability_target):
+                        copied_files.append(make_portable_path(reliability_target))
+                        if reliability_name.endswith(".png"):
+                            rewritten_plot_mapping["reliability_curve"] = make_portable_path(
+                                reliability_target
+                            )
+
                 summary_payload["plot_paths"] = rewritten_plot_mapping
 
-            reliability_source = calibration_summary_source.parent / "reliability_curve.csv"
-            reliability_target = calibration_dir / "reliability_curve.csv"
-            if _copy_file_if_exists(reliability_source, reliability_target):
-                copied_files.append(make_portable_path(reliability_target))
+            for reliability_name in ("reliability_curve.csv", "reliability_curve.png"):
+                reliability_source = calibration_summary_source.parent / reliability_name
+                reliability_target = calibration_dir / reliability_name
+                if _copy_file_if_exists(reliability_source, reliability_target):
+                    copied_files.append(make_portable_path(reliability_target))
 
             summary_payload["checkpoint_path"] = make_portable_path(checkpoint_target)
             parquet_path_value = summary_payload.get("parquet_path")
@@ -258,6 +282,35 @@ def main() -> int:
     for walkthrough_candidate in walkthrough_candidates:
         if _copy_file_if_exists(walkthrough_candidate, walkthrough_target):
             copied_files.append(make_portable_path(walkthrough_target))
+            break
+
+    operational_subset_target = output_root / "demo" / "operational_windows_subset.parquet"
+    operational_subset_candidates = [
+        resolve_runtime_path(Path("assets/demo/operational_windows_subset.parquet")),
+    ]
+    for operational_subset_candidate in operational_subset_candidates:
+        if _copy_file_if_exists(operational_subset_candidate, operational_subset_target):
+            copied_files.append(make_portable_path(operational_subset_target))
+            break
+
+    explainability_candidates = [
+        resolve_runtime_path(Path("artifacts/analysis/explainability/feature_importance.csv")),
+        resolve_runtime_path(Path("artifacts/analysis/explainability/feature_importance.json")),
+        resolve_runtime_path(Path("assets/demo/feature_importance.csv")),
+        resolve_runtime_path(Path("assets/demo/feature_importance.json")),
+    ]
+    for explainability_candidate in explainability_candidates:
+        if not explainability_candidate.exists():
+            continue
+
+        explainability_target = (
+            output_root
+            / "analysis"
+            / "explainability"
+            / explainability_candidate.name
+        )
+        if _copy_file_if_exists(explainability_candidate, explainability_target):
+            copied_files.append(make_portable_path(explainability_target))
             break
 
     save_model_manifest(output_manifest_path, rewritten_manifest)
