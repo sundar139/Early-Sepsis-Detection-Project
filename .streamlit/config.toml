@@ -1,0 +1,9 @@
+[server]
+headless = true
+runOnSave = false
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

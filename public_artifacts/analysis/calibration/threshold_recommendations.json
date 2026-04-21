@@ -1,0 +1,6 @@
+{
+  "default": 0.95,
+  "balanced": 0.99,
+  "high_recall": 0.9500000000000001,
+  "high_recall_target": 0.9
+}

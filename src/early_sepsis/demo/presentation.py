@@ -268,6 +268,7 @@ def resolve_calibration_summary(
     manifest: dict[str, Any],
     *,
     manifest_path: Path,
+    public_artifacts_root: Path | None = None,
 ) -> tuple[dict[str, Any] | None, Path | None]:
     candidates: list[str | Path] = []
 
@@ -278,6 +279,10 @@ def resolve_calibration_summary(
             candidates.append(summary_path_value)
 
     candidates.append(Path("artifacts/analysis/calibration/calibration_summary.json"))
+    if public_artifacts_root is not None:
+        candidates.append(
+            public_artifacts_root / "analysis" / "calibration" / "calibration_summary.json"
+        )
 
     for candidate in candidates:
         resolved_path = resolve_runtime_path(candidate, anchor=manifest_path.parent)
@@ -347,6 +352,7 @@ def collect_plot_artifacts(
     *,
     calibration_summary: dict[str, Any] | None,
     manifest_path: Path,
+    public_artifacts_root: Path | None = None,
 ) -> dict[str, Path]:
     available_plots: dict[str, Path] = {}
     plot_mapping = calibration_summary.get("plot_paths", {}) if calibration_summary else {}
@@ -359,8 +365,16 @@ def collect_plot_artifacts(
                 resolved_path = resolve_runtime_path(explicit_path, anchor=manifest_path.parent)
 
         if resolved_path is None:
-            fallback = Path("artifacts/analysis/calibration") / PLOT_FILE_NAMES[plot_key]
-            resolved_path = resolve_runtime_path(fallback, anchor=manifest_path.parent)
+            local_fallback = Path("artifacts/analysis/calibration") / PLOT_FILE_NAMES[plot_key]
+            resolved_path = resolve_runtime_path(local_fallback, anchor=manifest_path.parent)
+            if not resolved_path.exists() and public_artifacts_root is not None:
+                public_fallback = (
+                    public_artifacts_root
+                    / "analysis"
+                    / "calibration"
+                    / PLOT_FILE_NAMES[plot_key]
+                )
+                resolved_path = resolve_runtime_path(public_fallback, anchor=manifest_path.parent)
 
         if resolved_path.exists():
             available_plots[plot_key] = resolved_path
@@ -372,6 +386,7 @@ def load_reliability_curve(
     *,
     calibration_summary_path: Path | None,
     manifest_path: Path,
+    public_artifacts_root: Path | None = None,
 ) -> pd.DataFrame | None:
     candidate_paths: list[Path] = []
 
@@ -384,6 +399,13 @@ def load_reliability_curve(
             anchor=manifest_path.parent,
         )
     )
+    if public_artifacts_root is not None:
+        candidate_paths.append(
+            resolve_runtime_path(
+                public_artifacts_root / "analysis" / "calibration" / "reliability_curve.csv",
+                anchor=manifest_path.parent,
+            )
+        )
 
     for candidate in candidate_paths:
         if not candidate.exists():
@@ -401,16 +423,35 @@ def load_reliability_curve(
     return None
 
 
-def load_experiment_comparison(*, limit: int = 5) -> pd.DataFrame | None:
-    comparison_path = resolve_runtime_path(
-        Path("artifacts/analysis/experiments/sequence_experiment_comparison.csv")
-    )
-    if not comparison_path.exists():
-        return None
+def load_experiment_comparison(
+    *,
+    limit: int = 5,
+    public_artifacts_root: Path | None = None,
+) -> pd.DataFrame | None:
+    candidate_paths = [
+        resolve_runtime_path(Path("artifacts/analysis/experiments/sequence_experiment_comparison.csv"))
+    ]
+    if public_artifacts_root is not None:
+        candidate_paths.append(
+            resolve_runtime_path(
+                public_artifacts_root
+                / "analysis"
+                / "experiments"
+                / "sequence_experiment_comparison.csv"
+            )
+        )
 
-    try:
-        frame = pd.read_csv(comparison_path)
-    except Exception:
+    frame: pd.DataFrame | None = None
+    for comparison_path in candidate_paths:
+        if not comparison_path.exists():
+            continue
+        try:
+            frame = pd.read_csv(comparison_path)
+            break
+        except Exception:
+            continue
+
+    if frame is None:
         return None
 
     if frame.empty:

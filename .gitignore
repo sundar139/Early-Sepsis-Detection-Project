@@ -19,21 +19,28 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
+.cache/
+.nox/
+.tox/
 .coverage
 coverage.xml
 htmlcov/
+pip-wheel-metadata/
 
 # Local environment files
 .env
 !.env.example
+.streamlit/secrets.toml
 
 # IDE/editor
 .vscode/
 .idea/
+.ipynb_checkpoints/
 
 # OS files
 .DS_Store
 Thumbs.db
+Desktop.ini
 
 # Data and experiment outputs
 data/raw/
@@ -45,6 +52,7 @@ data/windows/
 mlruns/
 .prefect/
 optuna.db
+mlflow.db
 
 # Runtime artifacts
 artifacts/*
@@ -55,3 +63,15 @@ tests/fixtures/generated_synthetic.csv
 
 # Logs
 *.log
+logs/
+
+# Temporary and local runtime files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# Container build leftovers
+docker/.env
+docker/*.local

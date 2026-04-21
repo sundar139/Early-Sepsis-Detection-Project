@@ -3,10 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+import pytest
+
 from early_sepsis.demo.presentation import (
     collect_metric_snapshot,
+    collect_plot_artifacts,
     compute_operational_metrics,
     find_duplicate_threshold_modes,
+    load_experiment_comparison,
+    load_reliability_curve,
+    resolve_calibration_summary,
     safe_data_source_label,
     sanitize_public_text,
     serialize_public_ui_metadata,
@@ -176,6 +183,104 @@ def test_sanitize_public_text_redacts_unix_style_paths() -> None:
     assert "<redacted>" in sanitized
 
 
+def test_resolve_calibration_summary_uses_public_artifacts_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SEPSIS_PROJECT_ROOT", str(tmp_path))
+
+    public_root = tmp_path / "public_artifacts"
+    summary_path = public_root / "analysis" / "calibration" / "calibration_summary.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text('{"default_metrics": {"auroc": 0.7}}', encoding="utf-8")
+
+    summary_payload, resolved_path = resolve_calibration_summary(
+        manifest={},
+        manifest_path=tmp_path / "artifacts" / "models" / "registry" / "selected_model.json",
+        public_artifacts_root=public_root,
+    )
+
+    assert summary_payload is not None
+    assert resolved_path == summary_path.resolve()
+
+
+def test_collect_plot_artifacts_uses_public_artifacts_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SEPSIS_PROJECT_ROOT", str(tmp_path))
+
+    public_root = tmp_path / "public_artifacts"
+    plot_path = public_root / "analysis" / "calibration" / "roc_curve.png"
+    plot_path.parent.mkdir(parents=True, exist_ok=True)
+    plot_path.write_bytes(b"PNG")
+
+    plot_paths = collect_plot_artifacts(
+        calibration_summary=None,
+        manifest_path=tmp_path / "artifacts" / "models" / "registry" / "selected_model.json",
+        public_artifacts_root=public_root,
+    )
+
+    assert "roc_curve" in plot_paths
+    assert plot_paths["roc_curve"] == plot_path.resolve()
+
+
+def test_load_reliability_curve_uses_public_artifacts_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SEPSIS_PROJECT_ROOT", str(tmp_path))
+
+    public_root = tmp_path / "public_artifacts"
+    reliability_path = public_root / "analysis" / "calibration" / "reliability_curve.csv"
+    reliability_path.parent.mkdir(parents=True, exist_ok=True)
+    reliability_path.write_text(
+        "bin,bin_accuracy,bin_confidence,sample_count\n0,0.2,0.1,10\n1,0.5,0.4,8\n",
+        encoding="utf-8",
+    )
+
+    frame = load_reliability_curve(
+        calibration_summary_path=None,
+        manifest_path=tmp_path / "artifacts" / "models" / "registry" / "selected_model.json",
+        public_artifacts_root=public_root,
+    )
+
+    assert frame is not None
+    assert list(frame.columns) == ["bin", "bin_accuracy", "bin_confidence", "sample_count"]
+
+
+def test_load_experiment_comparison_uses_public_artifacts_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SEPSIS_PROJECT_ROOT", str(tmp_path))
+
+    public_root = tmp_path / "public_artifacts"
+    comparison_path = (
+        public_root / "analysis" / "experiments" / "sequence_experiment_comparison.csv"
+    )
+    comparison_path.parent.mkdir(parents=True, exist_ok=True)
+    frame = pd.DataFrame(
+        {
+            "run_name": ["run_a"],
+            "model_type": ["patchtst"],
+            "model_family": ["patchtst_classifier"],
+            "dataset_tag": ["physionet"],
+            "validation_auprc": [0.12],
+            "validation_auroc": [0.72],
+            "test_auprc": [0.09],
+            "runtime_seconds": [12.3],
+        }
+    )
+    frame.to_csv(comparison_path, index=False)
+
+    comparison = load_experiment_comparison(limit=5, public_artifacts_root=public_root)
+
+    assert comparison is not None
+    assert len(comparison) == 1
+    assert comparison.iloc[0]["Run"] == "run_a"
+
+
 def test_streamlit_app_uses_public_facing_wording_without_raw_json() -> None:
     app_path = Path(__file__).resolve().parents[1] / "src" / "early_sepsis" / "demo" / "app.py"
     app_source = app_path.read_text(encoding="utf-8")
@@ -188,10 +293,14 @@ def test_streamlit_app_uses_public_facing_wording_without_raw_json() -> None:
     assert "@media print" in app_source
     assert "break-inside: avoid" in app_source
     assert "Patient ID" not in app_source
+    assert "| Patient " not in app_source
     assert "Sample ID" in app_source
     assert "DS-" in app_source
     assert "artifact-unavailable-card" in app_source
+    assert "Generate calibration analysis outputs to include this panel." in app_source
     assert "Threshold-Invariant Evaluation Summary" in app_source
     assert "Threshold-Dependent Operational Summary" in app_source
     assert "find_duplicate_threshold_modes" in app_source
     assert "operational-grid" in app_source
+    assert "C:\\\\" not in app_source
+    assert "/Users/" not in app_source

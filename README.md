@@ -330,60 +330,84 @@ exposure, and no machine-specific absolute paths are rendered.
 When `SEPSIS_DEMO_PUBLIC_MODE=true` (or `SEPSIS_ENVIRONMENT` is non-development), the demo defaults
 to a tiny safe sample parquet at `data/demo/sequence_demo_samples.parquet` and auto-creates it if missing.
 
-## Public Streamlit Deployment
+## Deploy
 
-Primary public deployment target:
+Primary target: Streamlit Community Cloud.
 
-- Streamlit app entrypoint: `streamlit_app.py`
-- Deployment dependencies: `requirements.txt`
-- Python runtime pin: `runtime.txt`
+Deployment entrypoint and runtime:
 
-Artifact expectations for public demo startup:
+- App file: `streamlit_app.py`
+- Dependencies: `requirements.txt`
+- Python runtime: `runtime.txt`
 
-- A valid selected-model manifest file is available at `artifacts/models/registry/selected_model.json`,
-    or `SEPSIS_SELECTED_SEQUENCE_MANIFEST_PATH` points to a valid manifest path.
-- The manifest `selected_run.checkpoint_path` points to an available checkpoint file in the deployment
-    filesystem.
-- Optional but recommended: run `scripts/migrate_manifest_paths.py` before deploy to ensure all manifest
-    and calibration metadata paths are portable.
-- Optional public-demo sample override: `SEPSIS_DEMO_SAMPLE_PARQUET_PATH`.
+### Local Validation
 
-If the selected manifest or checkpoint is missing, the app fails gracefully at startup with a clear
-error message and does not attempt inference.
+```bash
+uv run streamlit run streamlit_app.py
+```
 
-Public deployment steps (Streamlit-style free hosting):
+### Compact Public Artifacts
 
-1. Push this repository to your Git provider.
-2. Confirm required selected-model artifacts are available in deployment storage.
-3. In the hosting UI, set app file path to `streamlit_app.py`.
-4. Set `SEPSIS_DEMO_PUBLIC_MODE=true` for public-safe sample defaults.
-5. Set optional environment variables as needed:
-    - `SEPSIS_SELECTED_SEQUENCE_MANIFEST_PATH` when manifest path is not the default.
-    - `SEPSIS_PROJECT_ROOT` when deployment root differs from repository root.
-    - `SEPSIS_DEMO_SAMPLE_PARQUET_PATH` to override demo sample parquet location.
-6. Deploy; dependency install uses `requirements.txt` and Python version from `runtime.txt`.
+Use `public_artifacts/` for deployment-safe model artifacts.
 
-What is included in the public demo:
+Required for model-backed demo inference:
 
-- executive-style model status, threshold strategy, and performance summary sections
-- startup readiness checks for manifest and checkpoint availability
-- threshold-mode selection (`default`, `balanced`, `high_recall`) from selected manifest thresholds
-- clear separation between threshold-invariant evaluation metrics and threshold-dependent operational metrics
-- artifact-backed evaluation visuals (when available)
-- local in-process sequence inference from the selected checkpoint with deterministic score explanations
+- `public_artifacts/models/registry/selected_model.json`
+- `public_artifacts/models/checkpoints/best_checkpoint.pt`
 
-Print/PDF export note:
+Optional for richer UI:
 
-- The app provides print-safe layout and report styling, but browser-generated headers/footers
-    (URL, date, page number) are controlled by the browser print dialog. Disable "Headers and
-    footers" in the browser print settings if you need a clean report export.
+- `public_artifacts/analysis/calibration/calibration_summary.json`
+- `public_artifacts/analysis/calibration/threshold_recommendations.json`
+- calibration plot images and reliability CSV under `public_artifacts/analysis/calibration/`
+- `public_artifacts/analysis/experiments/sequence_experiment_comparison.csv`
+- `public_artifacts/demo/sequence_demo_samples.parquet`
 
-What remains local-only:
+Build a compact bundle from local selected artifacts:
 
-- full training and tuning workflows
-- calibration analysis and threshold recommendation generation
-- model selection and registry updates
-- local FastAPI serving endpoint workflows
+```bash
+uv run python scripts/prepare_public_artifacts.py --manifest-path artifacts/models/registry/selected_model.json --output-dir public_artifacts
+```
+
+### Streamlit Community Cloud
+
+1. Push this repository to GitHub.
+2. In Streamlit Community Cloud, create an app and set main file path to `streamlit_app.py`.
+3. In app settings, add secrets in TOML format:
+
+```toml
+[sepsis]
+environment = "production"
+demo_public_mode = true
+selected_sequence_manifest_path = "public_artifacts/models/registry/selected_model.json"
+public_artifacts_dir = "public_artifacts"
+demo_sample_parquet_path = "public_artifacts/demo/sequence_demo_samples.parquet"
+```
+
+The entrypoint maps these values to the existing `SEPSIS_*` settings at runtime. Do not commit
+`.streamlit/secrets.toml`.
+
+### Troubleshooting
+
+- `Selected sequence manifest was not found`: confirm `public_artifacts/models/registry/selected_model.json` exists.
+- `Selected checkpoint file is missing`: confirm manifest `selected_run.checkpoint_path` points to a file inside repo.
+- Missing visuals: include calibration artifacts in `public_artifacts/analysis/calibration/`; the app will show a safe unavailable state otherwise.
+- Import errors in cloud: ensure requirements install completed successfully and Python version matches `runtime.txt`.
+
+Print/PDF note:
+
+- The app controls print styling, but browser headers/footers (URL/date/page number) are browser-managed. Disable "Headers and footers" in the print dialog for clean report exports.
+
+### Container Fallback
+
+If full repository artifact volume is too large for cloud hosting workflows, use the included Streamlit Docker path:
+
+```bash
+docker build -t early-sepsis-streamlit .
+docker run --rm -p 8501:8501 -e PORT=8501 early-sepsis-streamlit
+```
+
+The container binds Streamlit to `$PORT` and defaults to public demo mode.
 
 ## Limitations And Assumptions
 

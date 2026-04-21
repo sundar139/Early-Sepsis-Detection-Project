@@ -71,8 +71,29 @@ def test_resolve_manifest_path_resolves_relative_paths(tmp_path: Path) -> None:
     assert resolved_path == (tmp_path / relative_path).resolve()
 
 
-def test_validate_demo_startup_rejects_missing_manifest(tmp_path: Path) -> None:
+def test_resolve_manifest_path_uses_public_artifacts_fallback(tmp_path: Path) -> None:
+    public_manifest_path = (
+        tmp_path / "public_artifacts" / "models" / "registry" / "selected_model.json"
+    )
+    public_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    public_manifest_path.write_text("{}", encoding="utf-8")
+
+    resolved_path = resolve_manifest_path(
+        Path("artifacts/models/registry/selected_model.json"),
+        base=tmp_path,
+        public_artifacts_dir=tmp_path / "public_artifacts",
+    )
+
+    assert resolved_path == public_manifest_path.resolve()
+
+
+def test_validate_demo_startup_rejects_missing_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     missing_manifest_path = tmp_path / "artifacts" / "models" / "registry" / "selected_model.json"
+
+    monkeypatch.setenv("SEPSIS_PROJECT_ROOT", str(tmp_path))
 
     with pytest.raises(DemoStartupError, match="Selected sequence manifest was not found"):
         validate_demo_startup(missing_manifest_path)
@@ -150,3 +171,26 @@ def test_ensure_demo_sample_parquet_creates_and_reuses_compatible_sample(tmp_pat
     reused_path, recreated = ensure_demo_sample_parquet(payload, sample_path)
     assert reused_path == created_path
     assert recreated is False
+
+
+def test_ensure_demo_sample_parquet_uses_public_fallback_when_available(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "artifacts" / "models" / "sequence" / "run_demo" / "best.pt"
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.touch()
+
+    payload = _build_manifest_payload(tmp_path, checkpoint_path)
+
+    public_sample_path = tmp_path / "public_artifacts" / "demo" / "sequence_demo_samples.parquet"
+    created_path, created = ensure_demo_sample_parquet(payload, public_sample_path)
+    assert created is True
+    assert created_path == public_sample_path.resolve()
+
+    missing_local_sample = tmp_path / "data" / "demo" / "missing_sample.parquet"
+    resolved_path, generated = ensure_demo_sample_parquet(
+        payload,
+        missing_local_sample,
+        public_fallback_path=public_sample_path,
+    )
+
+    assert generated is False
+    assert resolved_path == public_sample_path.resolve()

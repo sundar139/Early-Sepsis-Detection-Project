@@ -1098,6 +1098,7 @@ def main() -> None:
     settings = get_settings()
     st.set_page_config(page_title="Early Sepsis Detection", page_icon="ES", layout="wide")
     _apply_theme()
+    public_artifacts_root = resolve_runtime_path(settings.public_artifacts_dir)
 
     deployment_public_mode = settings.environment.strip().lower() != "development"
 
@@ -1112,7 +1113,10 @@ def main() -> None:
 
         max_rows = st.slider("Rows to load", min_value=20, max_value=1000, value=200, step=20)
 
-        manifest_path = resolve_manifest_path(settings.selected_sequence_manifest_path)
+        manifest_path = resolve_manifest_path(
+            settings.selected_sequence_manifest_path,
+            public_artifacts_dir=public_artifacts_root,
+        )
 
     try:
         startup_status = validate_demo_startup(manifest_path)
@@ -1129,6 +1133,7 @@ def main() -> None:
     calibration_summary, calibration_summary_path = resolve_calibration_summary(
         manifest,
         manifest_path=startup_status.manifest_path,
+        public_artifacts_root=public_artifacts_root,
     )
     metric_snapshot, metric_source = collect_metric_snapshot(
         manifest,
@@ -1137,18 +1142,26 @@ def main() -> None:
     plot_paths = collect_plot_artifacts(
         calibration_summary=calibration_summary,
         manifest_path=startup_status.manifest_path,
+        public_artifacts_root=public_artifacts_root,
     )
     reliability_curve = load_reliability_curve(
         calibration_summary_path=calibration_summary_path,
         manifest_path=startup_status.manifest_path,
+        public_artifacts_root=public_artifacts_root,
     )
-    comparison_frame = load_experiment_comparison(limit=5)
+    comparison_frame = load_experiment_comparison(
+        limit=5,
+        public_artifacts_root=public_artifacts_root,
+    )
 
     if public_mode:
         try:
             parquet_path, sample_created = ensure_demo_sample_parquet(
                 manifest,
                 settings.demo_sample_parquet_path,
+                public_fallback_path=(
+                    public_artifacts_root / "demo" / "sequence_demo_samples.parquet"
+                ),
             )
         except Exception as exc:
             st.error("Unable to prepare public demo samples.")

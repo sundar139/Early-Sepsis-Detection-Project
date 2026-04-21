@@ -1,0 +1,36 @@
+{
+  "checkpoint_path": "public_artifacts/models/checkpoints/best_checkpoint.pt",
+  "parquet_path": "artifacts/windows/validation.parquet",
+  "sample_count": 187256,
+  "positive_rate": 0.00986884265390695,
+  "default_threshold": 0.95,
+  "default_metrics": {
+    "auroc": 0.7413713273111868,
+    "auprc": 0.032521159835677875,
+    "accuracy": 0.3926389541590123,
+    "precision": 0.014501935327096316,
+    "recall": 0.9042207792207793,
+    "f1": 0.028546047798828092,
+    "threshold": 0.95,
+    "true_negative": 71853,
+    "false_positive": 113555,
+    "false_negative": 177,
+    "true_positive": 1671,
+    "positive_rate": 0.00986884265390695,
+    "predicted_positive_rate": 0.6153394283761268,
+    "brier_score": 0.6425371038816389,
+    "expected_calibration_error": 0.6648539195046427
+  },
+  "recommended_thresholds": {
+    "default": 0.95,
+    "balanced": 0.99,
+    "high_recall": 0.9500000000000001,
+    "high_recall_target": 0.9
+  },
+  "plot_paths": {
+    "roc_curve": "public_artifacts/analysis/calibration/roc_curve.png",
+    "pr_curve": "public_artifacts/analysis/calibration/pr_curve.png",
+    "confusion_matrix": "public_artifacts/analysis/calibration/confusion_matrix.png",
+    "score_distribution": "public_artifacts/analysis/calibration/score_distribution.png"
+  }
+}

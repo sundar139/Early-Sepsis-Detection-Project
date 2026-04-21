@@ -27,10 +27,38 @@ class DemoStartupStatus:
     manifest: dict[str, Any]
 
 
-def resolve_manifest_path(path_value: str | Path, *, base: str | Path | None = None) -> Path:
+def _resolve_public_manifest_path(
+    *,
+    base: str | Path | None,
+    public_artifacts_dir: str | Path | None,
+) -> Path:
+    public_root = resolve_runtime_path(
+        public_artifacts_dir or Path("public_artifacts"),
+        project_root=base,
+    )
+    return (public_root / "models" / "registry" / "selected_model.json").resolve()
+
+
+def resolve_manifest_path(
+    path_value: str | Path,
+    *,
+    base: str | Path | None = None,
+    public_artifacts_dir: str | Path | None = None,
+) -> Path:
     """Resolves manifest paths for local and deployment runtimes."""
 
-    return resolve_runtime_path(path_value, project_root=base)
+    resolved_path = resolve_runtime_path(path_value, project_root=base)
+    if resolved_path.exists():
+        return resolved_path
+
+    public_manifest_path = _resolve_public_manifest_path(
+        base=base,
+        public_artifacts_dir=public_artifacts_dir,
+    )
+    if public_manifest_path.exists():
+        return public_manifest_path
+
+    return resolved_path
 
 
 def _coerce_float_matrix(value: Any) -> np.ndarray:
@@ -103,6 +131,7 @@ def ensure_demo_sample_parquet(
     sample_path: str | Path,
     *,
     max_rows: int = 16,
+    public_fallback_path: str | Path | None = None,
 ) -> tuple[Path, bool]:
     """Ensures a small safe demo parquet exists and matches manifest dimensions."""
 
@@ -114,6 +143,16 @@ def ensure_demo_sample_parquet(
                 return resolved_sample_path, False
         except Exception:
             pass
+
+    if public_fallback_path is not None:
+        resolved_public_fallback_path = resolve_runtime_path(public_fallback_path)
+        if resolved_public_fallback_path.exists():
+            try:
+                fallback_frame = pd.read_parquet(resolved_public_fallback_path)
+                if _is_demo_sample_compatible(fallback_frame, manifest):
+                    return resolved_public_fallback_path, False
+            except Exception:
+                pass
 
     model_section = manifest["model"]
     include_static = bool(model_section["include_static"])

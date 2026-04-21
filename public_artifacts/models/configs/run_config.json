@@ -1,0 +1,50 @@
+{
+  "training_config": {
+    "windows_dir": "artifacts\\windows",
+    "output_dir": "artifacts\\models\\sequence_tuning\\optuna\\trial_0006",
+    "model_name": "patchtst_classifier",
+    "seed": 42,
+    "device": "auto",
+    "epochs": 8,
+    "batch_size": 192,
+    "learning_rate": 0.0017055212079458474,
+    "weight_decay": 0.004347830088033531,
+    "max_grad_norm": 1.0,
+    "num_workers": 0,
+    "early_stopping_patience": 3,
+    "early_stopping_min_delta": 0.0001,
+    "scheduler_patience": 2,
+    "scheduler_factor": 0.5,
+    "threshold": 0.5,
+    "optimize_threshold": true,
+    "calibration_bins": 10,
+    "imbalance_strategy": "both",
+    "mlflow_enabled": false,
+    "mlflow_tracking_uri": "file:./artifacts/mlruns",
+    "mlflow_experiment_name": "early-sepsis-sequence",
+    "mlflow_run_name": null
+  },
+  "model_config": {
+    "model_type": "patchtst",
+    "include_mask": true,
+    "include_static": true,
+    "recurrent_hidden_dim": 96,
+    "recurrent_num_layers": 2,
+    "recurrent_dropout": 0.2,
+    "recurrent_bidirectional": true,
+    "patch_len": 8,
+    "patch_stride": 1,
+    "patch_d_model": 128,
+    "patch_num_heads": 8,
+    "patch_num_layers": 3,
+    "patch_ff_dim": 384,
+    "patch_dropout": 0.26202123845169567
+  },
+  "class_distribution": {
+    "negative": 866636,
+    "positive": 8418
+  },
+  "input_dim": 39,
+  "sequence_length": 8,
+  "static_dim": 5
+}
