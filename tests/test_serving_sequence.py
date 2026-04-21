@@ -8,7 +8,11 @@ import pytest
 import torch
 from fastapi.testclient import TestClient
 
-from early_sepsis.modeling.model_manifest import build_feature_signature, save_model_manifest
+from early_sepsis.modeling.model_manifest import (
+    build_feature_signature,
+    load_model_manifest,
+    save_model_manifest,
+)
 from early_sepsis.modeling.sequence_models import SequenceModelConfig, build_sequence_model
 from early_sepsis.serving import api as serving_api
 from early_sepsis.serving.sequence_service import (
@@ -169,6 +173,32 @@ def test_predict_sequence_samples_dataset_guard(tmp_path: Path) -> None:
         )
 
 
+def test_predict_sequence_samples_resolve_relative_paths_with_project_root_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("torch")
+
+    manifest_path = _create_selected_manifest(tmp_path)
+    sample = _build_valid_sample()
+
+    manifest = load_model_manifest(manifest_path)
+    manifest["selected_run"]["checkpoint_path"] = "models/sequence/run_a/best_checkpoint.pt"
+    save_model_manifest(manifest_path, manifest)
+
+    monkeypatch.setenv("SEPSIS_PROJECT_ROOT", str(tmp_path))
+
+    clear_sequence_runtime_cache()
+    predictions = predict_sequence_samples(
+        manifest_path=Path("registry/selected_model.json"),
+        dataset_tag="physionet",
+        samples=[sample],
+        operating_mode="default",
+    )
+
+    assert len(predictions) == 1
+
+
 def test_predict_sequence_api_compatibility(tmp_path: Path) -> None:
     pytest.importorskip("torch")
 
@@ -251,3 +281,54 @@ def test_predict_sequence_api_compatibility(tmp_path: Path) -> None:
     finally:
         serving_api.settings.selected_sequence_manifest_path = original_manifest_path
         serving_api.settings.serving_default_operating_mode = original_default_mode
+
+
+def test_serving_api_sanitizes_paths_outside_development(tmp_path: Path) -> None:
+    pytest.importorskip("torch")
+
+    manifest_path = _create_selected_manifest(tmp_path)
+    sample = _build_valid_sample()
+
+    clear_sequence_runtime_cache()
+    original_manifest_path = serving_api.settings.selected_sequence_manifest_path
+    original_default_mode = serving_api.settings.serving_default_operating_mode
+    original_environment = serving_api.settings.environment
+
+    try:
+        serving_api.settings.selected_sequence_manifest_path = manifest_path
+        serving_api.settings.serving_default_operating_mode = "balanced"
+        serving_api.settings.environment = "production"
+
+        client = TestClient(serving_api.create_app())
+
+        health_response = client.get("/health")
+        assert health_response.status_code == 200
+        health_payload = health_response.json()
+        assert health_payload["selected_sequence_model"]["manifest_path"] == "<redacted>"
+        assert health_payload["selected_sequence_model"]["checkpoint_path"] == "<redacted>"
+        assert health_payload["tabular_model"]["artifact_path"] == "artifacts/models/model.pkl"
+
+        info_response = client.get("/model-info")
+        assert info_response.status_code == 200
+        info_payload = info_response.json()
+        assert info_payload["selected_sequence_model"]["manifest_path"] == "<redacted>"
+        checkpoint_path = info_payload["selected_sequence_model"]["manifest"]["selected_run"][
+            "checkpoint_path"
+        ]
+        assert checkpoint_path == "<redacted>"
+
+        predict_response = client.post(
+            "/predict-sequence",
+            json={
+                "dataset_tag": "physionet",
+                "operating_mode": "default",
+                "samples": [sample],
+            },
+        )
+        assert predict_response.status_code == 200
+        prediction_payload = predict_response.json()
+        assert prediction_payload["selected_model_manifest_path"] == "<redacted>"
+    finally:
+        serving_api.settings.selected_sequence_manifest_path = original_manifest_path
+        serving_api.settings.serving_default_operating_mode = original_default_mode
+        serving_api.settings.environment = original_environment

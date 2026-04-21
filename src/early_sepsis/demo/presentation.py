@@ -1,0 +1,458 @@
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from early_sepsis.runtime_paths import resolve_runtime_path
+
+METRIC_LABELS: dict[str, str] = {
+    "auroc": "AUROC",
+    "auprc": "AUPRC",
+    "precision": "Precision",
+    "recall": "Recall",
+    "f1": "F1",
+    "accuracy": "Accuracy",
+    "brier_score": "Brier Score",
+    "expected_calibration_error": "Expected Calibration Error",
+}
+
+PLOT_TITLES: dict[str, str] = {
+    "roc_curve": "ROC Curve",
+    "pr_curve": "Precision-Recall Curve",
+    "confusion_matrix": "Confusion Matrix",
+    "reliability_curve": "Reliability / Calibration Curve",
+    "score_distribution": "Score Distribution",
+}
+
+PLOT_FILE_NAMES: dict[str, str] = {
+    "roc_curve": "roc_curve.png",
+    "pr_curve": "pr_curve.png",
+    "confusion_matrix": "confusion_matrix.png",
+    "reliability_curve": "reliability_curve.png",
+    "score_distribution": "score_distribution.png",
+}
+
+PLOT_DISPLAY_ORDER: tuple[str, ...] = (
+    "roc_curve",
+    "pr_curve",
+    "confusion_matrix",
+    "reliability_curve",
+    "score_distribution",
+)
+
+THRESHOLD_MODE_LABELS: dict[str, str] = {
+    "default": "Default",
+    "balanced": "Balanced",
+    "high_recall": "High Recall",
+}
+
+THRESHOLD_MODE_DESCRIPTIONS: dict[str, str] = {
+    "default": "Matches the model's baseline calibration threshold.",
+    "balanced": "Optimizes precision-recall balance for fewer false alarms and misses.",
+    "high_recall": "Prioritizes sensitivity for earlier detection at the cost of more alerts.",
+}
+
+_SENSITIVE_KEY_TOKENS: tuple[str, ...] = (
+    "path",
+    "dir",
+    "manifest",
+    "checkpoint",
+    "parquet",
+    "username",
+    "home",
+)
+
+_WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/].+")
+_WINDOWS_EMBEDDED_RE = re.compile(r"[A-Za-z]:\\\\[^\s,;]+")
+_POSIX_EMBEDDED_RE = re.compile(r"/(?:Users|home)/[^\s,;]+")
+
+
+def format_threshold_mode(mode: str) -> str:
+    return THRESHOLD_MODE_LABELS.get(mode, mode.replace("_", " ").title())
+
+
+def describe_threshold_mode(mode: str) -> str:
+    return THRESHOLD_MODE_DESCRIPTIONS.get(mode, "")
+
+
+def find_duplicate_threshold_modes(
+    thresholds: dict[str, Any],
+    *,
+    modes: Sequence[str],
+    decimals: int = 6,
+) -> list[tuple[float, tuple[str, ...]]]:
+    grouped: dict[float, list[str]] = {}
+    for mode in modes:
+        value = thresholds.get(mode)
+        if not isinstance(value, (float, int)):
+            continue
+        normalized_threshold = round(float(value), decimals)
+        grouped.setdefault(normalized_threshold, []).append(mode)
+
+    duplicates: list[tuple[float, tuple[str, ...]]] = []
+    for threshold_value, threshold_modes in grouped.items():
+        if len(threshold_modes) > 1:
+            duplicates.append((threshold_value, tuple(threshold_modes)))
+
+    duplicates.sort(key=lambda item: item[0])
+    return duplicates
+
+
+def compute_operational_metrics(
+    *,
+    probabilities: Sequence[float],
+    labels: Sequence[int],
+    threshold: float,
+) -> dict[str, float | int]:
+    probability_array = np.asarray(list(probabilities), dtype=np.float64)
+    label_array = np.asarray(list(labels), dtype=np.int64)
+
+    if probability_array.ndim != 1 or label_array.ndim != 1:
+        msg = "probabilities and labels must be 1D sequences"
+        raise ValueError(msg)
+    if probability_array.shape[0] != label_array.shape[0]:
+        msg = "probabilities and labels must contain the same number of elements"
+        raise ValueError(msg)
+    if not 0.0 <= float(threshold) <= 1.0:
+        msg = "threshold must be within [0, 1]"
+        raise ValueError(msg)
+
+    prediction_array = (probability_array >= float(threshold)).astype(np.int64)
+    positive_mask = label_array == 1
+    negative_mask = label_array == 0
+
+    true_positive = int(np.logical_and(positive_mask, prediction_array == 1).sum())
+    false_positive = int(np.logical_and(negative_mask, prediction_array == 1).sum())
+    false_negative = int(np.logical_and(positive_mask, prediction_array == 0).sum())
+    true_negative = int(np.logical_and(negative_mask, prediction_array == 0).sum())
+
+    sample_count = int(label_array.shape[0])
+    positive_count = int(positive_mask.sum())
+    negative_count = int(negative_mask.sum())
+    alert_count = int(prediction_array.sum())
+
+    def _safe_ratio(numerator: float, denominator: float) -> float:
+        if denominator <= 0.0:
+            return 0.0
+        return float(numerator / denominator)
+
+    precision = _safe_ratio(true_positive, true_positive + false_positive)
+    recall = _safe_ratio(true_positive, true_positive + false_negative)
+    specificity = _safe_ratio(true_negative, true_negative + false_positive)
+    sensitivity = recall
+    f1 = _safe_ratio(2.0 * precision * recall, precision + recall)
+    balanced_accuracy = (sensitivity + specificity) / 2.0
+    accuracy = _safe_ratio(true_positive + true_negative, sample_count)
+    positive_rate = _safe_ratio(positive_count, sample_count)
+    predicted_positive_rate = _safe_ratio(alert_count, sample_count)
+
+    return {
+        "threshold": float(threshold),
+        "sample_count": sample_count,
+        "positive_count": positive_count,
+        "negative_count": negative_count,
+        "alert_count": alert_count,
+        "positive_rate": positive_rate,
+        "predicted_positive_rate": predicted_positive_rate,
+        "true_positive": true_positive,
+        "false_positive": false_positive,
+        "false_negative": false_negative,
+        "true_negative": true_negative,
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "specificity": specificity,
+        "sensitivity": sensitivity,
+        "balanced_accuracy": balanced_accuracy,
+    }
+
+
+def safe_data_source_label(*, public_mode: bool, split: str) -> str:
+    if public_mode:
+        return "Public demo sample"
+    return f"Demo {split.capitalize()} split"
+
+
+def _looks_like_path_text(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped:
+        return False
+
+    if _WINDOWS_ABSOLUTE_RE.match(stripped) or stripped.startswith("\\\\"):
+        return True
+
+    lowered = stripped.lower()
+    if "\\users\\" in lowered or "/users/" in lowered or "/home/" in lowered:
+        return True
+
+    if "\\" in stripped or "/" in stripped:
+        if lowered.endswith((".json", ".pt", ".parquet", ".csv", ".png", ".pkl", ".md")):
+            return True
+        parts = [part for part in re.split(r"[\\/]+", stripped) if part]
+        if len(parts) >= 3 and "." in parts[-1]:
+            return True
+
+    return False
+
+
+def sanitize_public_text(value: str, *, allow_internal_paths: bool = False) -> str:
+    if allow_internal_paths:
+        return value
+
+    redacted = _WINDOWS_EMBEDDED_RE.sub("<redacted>", value)
+    redacted = _POSIX_EMBEDDED_RE.sub("<redacted>", redacted)
+
+    if redacted != value:
+        return redacted
+
+    if _looks_like_path_text(value):
+        return "<redacted>"
+
+    return value
+
+
+def serialize_public_ui_metadata(
+    payload: Any,
+    *,
+    allow_internal_paths: bool = False,
+    key_name: str | None = None,
+) -> Any:
+    if isinstance(payload, dict):
+        return {
+            key: serialize_public_ui_metadata(
+                value,
+                allow_internal_paths=allow_internal_paths,
+                key_name=key,
+            )
+            for key, value in payload.items()
+        }
+
+    if isinstance(payload, list):
+        return [
+            serialize_public_ui_metadata(
+                item,
+                allow_internal_paths=allow_internal_paths,
+                key_name=key_name,
+            )
+            for item in payload
+        ]
+
+    if isinstance(payload, str):
+        normalized_key = (key_name or "").lower()
+        if any(token in normalized_key for token in _SENSITIVE_KEY_TOKENS):
+            return payload if allow_internal_paths else "<redacted>"
+        return sanitize_public_text(payload, allow_internal_paths=allow_internal_paths)
+
+    return payload
+
+
+def _load_json_mapping(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def resolve_calibration_summary(
+    manifest: dict[str, Any],
+    *,
+    manifest_path: Path,
+) -> tuple[dict[str, Any] | None, Path | None]:
+    candidates: list[str | Path] = []
+
+    threshold_metadata = manifest.get("threshold_metadata")
+    if isinstance(threshold_metadata, dict):
+        summary_path_value = threshold_metadata.get("calibration_summary_path")
+        if isinstance(summary_path_value, str) and summary_path_value.strip():
+            candidates.append(summary_path_value)
+
+    candidates.append(Path("artifacts/analysis/calibration/calibration_summary.json"))
+
+    for candidate in candidates:
+        resolved_path = resolve_runtime_path(candidate, anchor=manifest_path.parent)
+        if not resolved_path.exists():
+            continue
+
+        payload = _load_json_mapping(resolved_path)
+        if payload is not None:
+            return payload, resolved_path
+
+    return None, None
+
+
+def _as_float(value: Any) -> float | None:
+    if isinstance(value, (float, int)):
+        return float(value)
+    return None
+
+
+def collect_metric_snapshot(
+    manifest: dict[str, Any],
+    *,
+    calibration_summary: dict[str, Any] | None,
+) -> tuple[dict[str, float | None], str]:
+    manifest_metrics = manifest.get("metrics", {})
+    if isinstance(manifest_metrics, dict):
+        validation_metrics = manifest_metrics.get("validation", {})
+        test_metrics = manifest_metrics.get("test", {})
+    else:
+        validation_metrics = {}
+        test_metrics = {}
+
+    calibration_metrics: dict[str, Any] = {}
+    if calibration_summary is not None:
+        default_metrics = calibration_summary.get("default_metrics")
+        if isinstance(default_metrics, dict):
+            calibration_metrics = default_metrics
+
+    sources: list[tuple[str, dict[str, Any]]] = []
+    if calibration_metrics:
+        sources.append(("Calibration analysis", calibration_metrics))
+    if test_metrics:
+        sources.append(("Selected model test", test_metrics))
+    if validation_metrics:
+        sources.append(("Selected model validation", validation_metrics))
+
+    source_label = "No evaluation metrics found"
+    primary_metrics: dict[str, Any] = {}
+    if sources:
+        source_label, primary_metrics = sources[0]
+
+    metric_snapshot: dict[str, float | None] = {}
+    for metric_key in METRIC_LABELS:
+        value = _as_float(primary_metrics.get(metric_key))
+        if value is None:
+            for _, fallback_metrics in sources[1:]:
+                fallback_value = _as_float(fallback_metrics.get(metric_key))
+                if fallback_value is not None:
+                    value = fallback_value
+                    break
+        metric_snapshot[metric_key] = value
+
+    return metric_snapshot, source_label
+
+
+def collect_plot_artifacts(
+    *,
+    calibration_summary: dict[str, Any] | None,
+    manifest_path: Path,
+) -> dict[str, Path]:
+    available_plots: dict[str, Path] = {}
+    plot_mapping = calibration_summary.get("plot_paths", {}) if calibration_summary else {}
+
+    for plot_key in PLOT_DISPLAY_ORDER:
+        resolved_path: Path | None = None
+        if isinstance(plot_mapping, dict):
+            explicit_path = plot_mapping.get(plot_key)
+            if isinstance(explicit_path, str) and explicit_path.strip():
+                resolved_path = resolve_runtime_path(explicit_path, anchor=manifest_path.parent)
+
+        if resolved_path is None:
+            fallback = Path("artifacts/analysis/calibration") / PLOT_FILE_NAMES[plot_key]
+            resolved_path = resolve_runtime_path(fallback, anchor=manifest_path.parent)
+
+        if resolved_path.exists():
+            available_plots[plot_key] = resolved_path
+
+    return available_plots
+
+
+def load_reliability_curve(
+    *,
+    calibration_summary_path: Path | None,
+    manifest_path: Path,
+) -> pd.DataFrame | None:
+    candidate_paths: list[Path] = []
+
+    if calibration_summary_path is not None:
+        candidate_paths.append(calibration_summary_path.parent / "reliability_curve.csv")
+
+    candidate_paths.append(
+        resolve_runtime_path(
+            Path("artifacts/analysis/calibration/reliability_curve.csv"),
+            anchor=manifest_path.parent,
+        )
+    )
+
+    for candidate in candidate_paths:
+        if not candidate.exists():
+            continue
+
+        try:
+            frame = pd.read_csv(candidate)
+        except Exception:
+            continue
+
+        required_columns = {"bin", "bin_accuracy", "bin_confidence", "sample_count"}
+        if required_columns.issubset(frame.columns):
+            return frame[["bin", "bin_accuracy", "bin_confidence", "sample_count"]]
+
+    return None
+
+
+def load_experiment_comparison(*, limit: int = 5) -> pd.DataFrame | None:
+    comparison_path = resolve_runtime_path(
+        Path("artifacts/analysis/experiments/sequence_experiment_comparison.csv")
+    )
+    if not comparison_path.exists():
+        return None
+
+    try:
+        frame = pd.read_csv(comparison_path)
+    except Exception:
+        return None
+
+    if frame.empty:
+        return None
+
+    desired_columns = {
+        "run_name": "Run",
+        "model_type": "Model Type",
+        "model_family": "Model Family",
+        "dataset_tag": "Dataset",
+        "validation_auprc": "Validation AUPRC",
+        "validation_auroc": "Validation AUROC",
+        "test_auprc": "Test AUPRC",
+        "runtime_seconds": "Runtime (s)",
+    }
+
+    available_columns = [column for column in desired_columns if column in frame.columns]
+    if not available_columns:
+        return None
+
+    ordered = frame.copy()
+    if "validation_auprc" in ordered.columns:
+        ordered = ordered.sort_values(by="validation_auprc", ascending=False)
+
+    selected = ordered[available_columns].head(limit).rename(columns=desired_columns)
+    return selected.reset_index(drop=True)
+
+
+def detect_latest_pytest_status(*, project_root: Path) -> tuple[str, str]:
+    cache_path = project_root / ".pytest_cache" / "v" / "cache" / "lastfailed"
+    if not cache_path.exists():
+        return "Not available", "No cached pytest status artifact was found."
+
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "Not available", "Cached pytest status could not be parsed."
+
+    if not isinstance(payload, dict):
+        return "Not available", "Cached pytest status has an unsupported format."
+
+    if not payload:
+        return "Passing", "Latest cached pytest run reported no failures."
+
+    return "Attention", f"Latest cached pytest run reported {len(payload)} failing tests."

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import hashlib
 import json
+from datetime import UTC, datetime
 from math import isclose
 from pathlib import Path
 from typing import Any
+
+from early_sepsis.runtime_paths import make_portable_path
 
 SUPPORTED_MODEL_TYPES = frozenset({"gru", "lstm", "patchtst"})
 REQUIRED_THRESHOLD_KEYS = ("default", "balanced", "high_recall")
@@ -13,6 +15,20 @@ REQUIRED_THRESHOLD_KEYS = ("default", "balanced", "high_recall")
 
 class ModelManifestValidationError(ValueError):
     """Raised when a selected-model manifest is malformed."""
+
+
+MANIFEST_PATH_FIELDS: tuple[tuple[str, str], ...] = (
+    ("selected_run", "run_dir"),
+    ("selected_run", "checkpoint_path"),
+    ("selected_run", "run_config_path"),
+    ("dataset", "raw_data_path"),
+    ("dataset", "windows_dir"),
+    ("dataset", "processed_dir"),
+)
+THRESHOLD_METADATA_PATH_FIELDS: tuple[str, ...] = (
+    "recommendations_path",
+    "calibration_summary_path",
+)
 
 
 def build_feature_signature(feature_columns: list[str]) -> str:
@@ -381,6 +397,34 @@ def update_manifest_thresholds(
     return manifest
 
 
+def rewrite_manifest_paths_portable(
+    manifest: dict[str, Any], *, project_root: str | Path | None = None
+) -> dict[str, Any]:
+    """Rewrites manifest artifact paths to repo-portable path strings when possible."""
+
+    rewritten_manifest = json.loads(json.dumps(manifest))
+
+    for section_name, field_name in MANIFEST_PATH_FIELDS:
+        section = rewritten_manifest.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        field_value = section.get(field_name)
+        if isinstance(field_value, str) and field_value.strip():
+            section[field_name] = make_portable_path(field_value, project_root=project_root)
+
+    threshold_metadata = rewritten_manifest.get("threshold_metadata")
+    if isinstance(threshold_metadata, dict):
+        for field_name in THRESHOLD_METADATA_PATH_FIELDS:
+            field_value = threshold_metadata.get(field_name)
+            if isinstance(field_value, str) and field_value.strip():
+                threshold_metadata[field_name] = make_portable_path(
+                    field_value,
+                    project_root=project_root,
+                )
+
+    return rewritten_manifest
+
+
 def sync_manifest_thresholds_from_calibration(
     manifest_path: str | Path,
     recommendations_path: str | Path,
@@ -411,15 +455,16 @@ def sync_manifest_thresholds_from_calibration(
 
     threshold_metadata: dict[str, Any] = {
         "source": "calibration_recommendations",
-        "recommendations_path": str(Path(recommendations_path).resolve()),
+        "recommendations_path": make_portable_path(recommendations_path),
         "synchronized_at": datetime.now(UTC).isoformat(),
     }
     if resolved_summary_path is not None:
-        threshold_metadata["calibration_summary_path"] = str(resolved_summary_path.resolve())
+        threshold_metadata["calibration_summary_path"] = make_portable_path(resolved_summary_path)
     if "high_recall_target" in recommendations:
         threshold_metadata["high_recall_target"] = recommendations["high_recall_target"]
 
     manifest["threshold_metadata"] = threshold_metadata
+    manifest = rewrite_manifest_paths_portable(manifest)
 
     if write_changes:
         save_model_manifest(manifest_path, manifest)

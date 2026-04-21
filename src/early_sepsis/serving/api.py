@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -9,10 +8,11 @@ from pydantic import BaseModel, Field, model_validator
 from early_sepsis.explain.local_llm import explain_predictions
 from early_sepsis.logging_utils import configure_logging, get_logger
 from early_sepsis.modeling.predict import predict_records
+from early_sepsis.runtime_paths import resolve_runtime_path, sanitize_public_path
 from early_sepsis.serving.sequence_service import (
+    THRESHOLD_MODES,
     OperatingMode,
     SequenceServingError,
-    THRESHOLD_MODES,
     get_selected_model_info,
     predict_sequence_samples,
 )
@@ -21,6 +21,29 @@ from early_sepsis.settings import get_settings
 settings = get_settings()
 configure_logging(level=settings.log_level, json_logs=settings.json_logs)
 logger = get_logger(__name__)
+
+
+def _allow_raw_paths() -> bool:
+    return settings.environment.strip().lower() == "development"
+
+
+def _sanitize_path_value(path_value: str) -> str:
+    return sanitize_public_path(path_value, allow_raw_paths=_allow_raw_paths())
+
+
+def _sanitize_path_fields(payload: Any, key_name: str | None = None) -> Any:
+    if isinstance(payload, dict):
+        return {key: _sanitize_path_fields(value, key) for key, value in payload.items()}
+
+    if isinstance(payload, list):
+        return [_sanitize_path_fields(item, key_name) for item in payload]
+
+    if isinstance(payload, str) and key_name is not None:
+        normalized_key = key_name.lower()
+        if "path" in normalized_key or "dir" in normalized_key:
+            return _sanitize_path_value(payload)
+
+    return payload
 
 
 class PredictionRequest(BaseModel):
@@ -106,9 +129,10 @@ def create_app() -> FastAPI:
 
     @api.get("/health")
     def health() -> dict[str, Any]:
-        selected_manifest_path = Path(settings.selected_sequence_manifest_path)
+        selected_manifest_path = resolve_runtime_path(settings.selected_sequence_manifest_path)
+        tabular_model_path = resolve_runtime_path(settings.model_artifact_path)
         selected_sequence_payload: dict[str, Any] = {
-            "manifest_path": str(selected_manifest_path),
+            "manifest_path": _sanitize_path_value(str(selected_manifest_path)),
             "manifest_exists": selected_manifest_path.exists(),
             "available": False,
             "checkpoint_path": None,
@@ -127,7 +151,11 @@ def create_app() -> FastAPI:
                 selected_sequence_payload.update(
                     {
                         "available": checkpoint_exists,
-                        "checkpoint_path": checkpoint_path,
+                        "checkpoint_path": (
+                            _sanitize_path_value(checkpoint_path)
+                            if isinstance(checkpoint_path, str)
+                            else checkpoint_path
+                        ),
                         "checkpoint_exists": checkpoint_exists,
                     }
                 )
@@ -139,8 +167,8 @@ def create_app() -> FastAPI:
             "model_available": bool(selected_sequence_payload["available"]),
             "selected_sequence_model": selected_sequence_payload,
             "tabular_model": {
-                "artifact_path": str(settings.model_artifact_path),
-                "available": settings.model_artifact_path.exists(),
+                "artifact_path": _sanitize_path_value(str(tabular_model_path)),
+                "available": tabular_model_path.exists(),
             },
             "default_operating_mode": settings.serving_default_operating_mode,
             "environment": settings.environment,
@@ -148,9 +176,10 @@ def create_app() -> FastAPI:
 
     @api.get("/model-info")
     def model_info() -> dict[str, Any]:
-        selected_manifest_path = Path(settings.selected_sequence_manifest_path)
+        selected_manifest_path = resolve_runtime_path(settings.selected_sequence_manifest_path)
+        tabular_model_path = resolve_runtime_path(settings.model_artifact_path)
         selected_model_payload: dict[str, Any] = {
-            "manifest_path": str(selected_manifest_path),
+            "manifest_path": _sanitize_path_value(str(selected_manifest_path)),
             "manifest_exists": selected_manifest_path.exists(),
             "available": False,
         }
@@ -158,7 +187,7 @@ def create_app() -> FastAPI:
         if selected_manifest_path.exists():
             try:
                 manifest_payload = get_selected_model_info(selected_manifest_path)
-                selected_model_payload["manifest"] = manifest_payload
+                selected_model_payload["manifest"] = _sanitize_path_fields(manifest_payload)
                 selected_model_payload["available"] = bool(
                     manifest_payload.get("checkpoint_exists", False)
                 )
@@ -178,8 +207,8 @@ def create_app() -> FastAPI:
 
         return {
             "tabular_model": {
-                "artifact_path": str(settings.model_artifact_path),
-                "available": settings.model_artifact_path.exists(),
+                "artifact_path": _sanitize_path_value(str(tabular_model_path)),
+                "available": tabular_model_path.exists(),
             },
             "selected_sequence_model": selected_model_payload,
             "default_operating_mode": settings.serving_default_operating_mode,
@@ -188,9 +217,10 @@ def create_app() -> FastAPI:
 
     @api.post("/predict", response_model=PredictionResponse)
     def predict(payload: PredictionRequest) -> PredictionResponse:
-        if not settings.model_artifact_path.exists():
+        model_artifact_path = resolve_runtime_path(settings.model_artifact_path)
+        if not model_artifact_path.exists():
             msg = (
-                f"Model artifact not found at {settings.model_artifact_path}. "
+                f"Model artifact not found at {model_artifact_path}. "
                 "Train a model before requesting predictions."
             )
             raise HTTPException(status_code=503, detail=msg)
@@ -198,7 +228,7 @@ def create_app() -> FastAPI:
         try:
             raw_predictions = predict_records(
                 records=payload.records,
-                model_path=settings.model_artifact_path,
+                model_path=model_artifact_path,
             )
         except (ValueError, TypeError, KeyError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -222,10 +252,11 @@ def create_app() -> FastAPI:
 
     @api.post("/predict-sequence", response_model=SequencePredictionResponse)
     def predict_sequence(payload: SequencePredictionRequest) -> SequencePredictionResponse:
-        if not settings.selected_sequence_manifest_path.exists():
+        selected_manifest_path = resolve_runtime_path(settings.selected_sequence_manifest_path)
+        if not selected_manifest_path.exists():
             msg = (
                 "Selected sequence model manifest is missing at "
-                f"{settings.selected_sequence_manifest_path}. "
+                f"{selected_manifest_path}. "
                 "Run model selection before serving sequence requests."
             )
             raise HTTPException(status_code=503, detail=msg)
@@ -236,7 +267,7 @@ def create_app() -> FastAPI:
 
         try:
             raw_predictions = predict_sequence_samples(
-                manifest_path=settings.selected_sequence_manifest_path,
+                manifest_path=selected_manifest_path,
                 dataset_tag=payload.dataset_tag,
                 samples=[sample.model_dump(mode="python") for sample in payload.samples],
                 operating_mode=operating_mode,
@@ -254,7 +285,7 @@ def create_app() -> FastAPI:
 
         return SequencePredictionResponse(
             predictions=[SequencePredictionItem(**item) for item in raw_predictions],
-            selected_model_manifest_path=str(settings.selected_sequence_manifest_path),
+            selected_model_manifest_path=_sanitize_path_value(str(selected_manifest_path)),
         )
 
     return api

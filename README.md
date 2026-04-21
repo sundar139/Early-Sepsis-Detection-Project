@@ -172,6 +172,8 @@ Select the best checkpoint and persist a registry-style selected-model manifest:
 uv run python scripts/select_best_model.py --model-root artifacts/models --selection-metric validation_auprc --dataset-tag physionet --manifest-path artifacts/models/registry/selected_model.json
 ```
 
+Selected-manifest path fields are stored as repository-relative paths when possible to keep artifacts portable across machines.
+
 Analyze calibration and threshold sweep for the selected checkpoint, then update manifest thresholds:
 
 ```bash
@@ -182,6 +184,12 @@ Synchronize manifest thresholds from existing calibration artifacts without reru
 
 ```bash
 uv run python scripts/sync_manifest_thresholds.py --manifest-path artifacts/models/registry/selected_model.json --recommendations-path artifacts/analysis/calibration/threshold_recommendations.json --summary-path artifacts/analysis/calibration/calibration_summary.json
+```
+
+Rewrite existing selected-manifest and calibration metadata paths to portable repository-relative form:
+
+```bash
+uv run python scripts/migrate_manifest_paths.py --manifest-path artifacts/models/registry/selected_model.json
 ```
 
 Threshold operating modes supported across manifest-backed serving:
@@ -200,6 +208,7 @@ Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/model-info" | ConvertT
 ```
 
 `/model-info` includes available threshold modes and configured default serving mode.
+In non-development environments, filesystem paths are sanitized in `/health` and `/model-info` payloads.
 
 Run manifest-backed sequence inference through API with dataset guardrails:
 
@@ -299,11 +308,82 @@ Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/model-info" | ConvertT
 Run Streamlit demo:
 
 ```bash
-uv run streamlit run src/early_sepsis/demo/app.py
+uv run streamlit run streamlit_app.py
 ```
 
 The Streamlit demo uses the selected operating mode (`default`, `balanced`, `high_recall`) and
 displays the resolved threshold before running predictions.
+
+Threshold-invariant model metrics (AUROC, AUPRC, Brier score, calibration error) remain static
+across operating modes, while threshold-dependent operational outputs (alert rate, confusion matrix,
+precision/recall/specificity, and predicted classifications) update with the selected mode.
+
+If two operating modes map to the same numeric threshold in selected artifacts, the UI reports that
+those modes are currently equivalent for operational outputs.
+
+The Streamlit demo runs inference directly against the selected checkpoint and does not require the
+local FastAPI service to be running.
+
+The deployed UI is presentation-safe by default: no raw manifest dumps, no checkpoint/parquet path
+exposure, and no machine-specific absolute paths are rendered.
+
+When `SEPSIS_DEMO_PUBLIC_MODE=true` (or `SEPSIS_ENVIRONMENT` is non-development), the demo defaults
+to a tiny safe sample parquet at `data/demo/sequence_demo_samples.parquet` and auto-creates it if missing.
+
+## Public Streamlit Deployment
+
+Primary public deployment target:
+
+- Streamlit app entrypoint: `streamlit_app.py`
+- Deployment dependencies: `requirements.txt`
+- Python runtime pin: `runtime.txt`
+
+Artifact expectations for public demo startup:
+
+- A valid selected-model manifest file is available at `artifacts/models/registry/selected_model.json`,
+    or `SEPSIS_SELECTED_SEQUENCE_MANIFEST_PATH` points to a valid manifest path.
+- The manifest `selected_run.checkpoint_path` points to an available checkpoint file in the deployment
+    filesystem.
+- Optional but recommended: run `scripts/migrate_manifest_paths.py` before deploy to ensure all manifest
+    and calibration metadata paths are portable.
+- Optional public-demo sample override: `SEPSIS_DEMO_SAMPLE_PARQUET_PATH`.
+
+If the selected manifest or checkpoint is missing, the app fails gracefully at startup with a clear
+error message and does not attempt inference.
+
+Public deployment steps (Streamlit-style free hosting):
+
+1. Push this repository to your Git provider.
+2. Confirm required selected-model artifacts are available in deployment storage.
+3. In the hosting UI, set app file path to `streamlit_app.py`.
+4. Set `SEPSIS_DEMO_PUBLIC_MODE=true` for public-safe sample defaults.
+5. Set optional environment variables as needed:
+    - `SEPSIS_SELECTED_SEQUENCE_MANIFEST_PATH` when manifest path is not the default.
+    - `SEPSIS_PROJECT_ROOT` when deployment root differs from repository root.
+    - `SEPSIS_DEMO_SAMPLE_PARQUET_PATH` to override demo sample parquet location.
+6. Deploy; dependency install uses `requirements.txt` and Python version from `runtime.txt`.
+
+What is included in the public demo:
+
+- executive-style model status, threshold strategy, and performance summary sections
+- startup readiness checks for manifest and checkpoint availability
+- threshold-mode selection (`default`, `balanced`, `high_recall`) from selected manifest thresholds
+- clear separation between threshold-invariant evaluation metrics and threshold-dependent operational metrics
+- artifact-backed evaluation visuals (when available)
+- local in-process sequence inference from the selected checkpoint with deterministic score explanations
+
+Print/PDF export note:
+
+- The app provides print-safe layout and report styling, but browser-generated headers/footers
+    (URL, date, page number) are controlled by the browser print dialog. Disable "Headers and
+    footers" in the browser print settings if you need a clean report export.
+
+What remains local-only:
+
+- full training and tuning workflows
+- calibration analysis and threshold recommendation generation
+- model selection and registry updates
+- local FastAPI serving endpoint workflows
 
 ## Limitations And Assumptions
 

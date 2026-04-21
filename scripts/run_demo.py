@@ -5,7 +5,7 @@ import subprocess
 
 def main() -> None:
     subprocess.run(
-        ["streamlit", "run", "src/early_sepsis/demo/app.py"],
+        ["streamlit", "run", "streamlit_app.py"],
         check=True,
     )
 

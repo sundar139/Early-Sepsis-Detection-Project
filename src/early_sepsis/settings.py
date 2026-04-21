@@ -37,6 +37,8 @@ class AppSettings(BaseSettings):
         default=Path("artifacts/models/registry/selected_model.json")
     )
     serving_default_operating_mode: str = Field(default="default")
+    demo_public_mode: bool = Field(default=False)
+    demo_sample_parquet_path: Path = Field(default=Path("data/demo/sequence_demo_samples.parquet"))
 
     enable_mlflow: bool = Field(default=False)
     mlflow_tracking_uri: str = Field(default="sqlite:///mlflow.db")
@@ -100,6 +102,7 @@ class AppSettings(BaseSettings):
 
         self.model_artifact_path.parent.mkdir(parents=True, exist_ok=True)
         self.selected_sequence_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        self.demo_sample_parquet_path.parent.mkdir(parents=True, exist_ok=True)
         self.processed_data_dir.mkdir(parents=True, exist_ok=True)
         self.window_data_dir.mkdir(parents=True, exist_ok=True)
         self.split_manifest_dir.mkdir(parents=True, exist_ok=True)

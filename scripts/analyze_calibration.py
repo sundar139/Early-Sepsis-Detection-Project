@@ -16,6 +16,7 @@ from early_sepsis.modeling.model_manifest import (
     load_model_manifest,
     sync_manifest_thresholds_from_calibration,
 )
+from early_sepsis.runtime_paths import resolve_runtime_path
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -69,7 +70,7 @@ def _resolve_parquet_path(
     manifest: dict[str, object], split: str, explicit_path: str | None
 ) -> Path:
     if explicit_path is not None:
-        return Path(explicit_path)
+        return resolve_runtime_path(explicit_path, project_root=PROJECT_ROOT)
 
     dataset_section = manifest.get("dataset", {})
     if not isinstance(dataset_section, dict):
@@ -81,14 +82,18 @@ def _resolve_parquet_path(
         msg = "Manifest dataset.windows_dir must be a string"
         raise ValueError(msg)
 
-    return Path(windows_dir_value) / f"{split}.parquet"
+    windows_dir = resolve_runtime_path(windows_dir_value, project_root=PROJECT_ROOT)
+    return windows_dir / f"{split}.parquet"
 
 
 def main() -> None:
     args = _build_parser().parse_args()
 
     manifest = load_model_manifest(args.manifest_path)
-    checkpoint_path = manifest["selected_run"]["checkpoint_path"]
+    checkpoint_path = resolve_runtime_path(
+        manifest["selected_run"]["checkpoint_path"],
+        project_root=PROJECT_ROOT,
+    )
     parquet_path = _resolve_parquet_path(
         manifest, split=args.split, explicit_path=args.parquet_path
     )

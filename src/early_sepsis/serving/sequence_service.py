@@ -11,6 +11,7 @@ from torch import Tensor, nn
 
 from early_sepsis.modeling.model_manifest import load_model_manifest
 from early_sepsis.modeling.sequence_pipeline import load_model_from_checkpoint
+from early_sepsis.runtime_paths import resolve_runtime_path
 
 OperatingMode = Literal["default", "balanced", "high_recall"]
 THRESHOLD_MODES: tuple[OperatingMode, ...] = ("default", "balanced", "high_recall")
@@ -194,8 +195,12 @@ def validate_sequence_samples(
 
 @lru_cache(maxsize=4)
 def _load_selected_sequence_runtime(manifest_path: str) -> SelectedSequenceRuntime:
-    manifest = load_model_manifest(manifest_path)
-    checkpoint_path = Path(str(manifest["selected_run"]["checkpoint_path"]))
+    resolved_manifest_path = resolve_runtime_path(manifest_path)
+    manifest = load_model_manifest(resolved_manifest_path)
+    checkpoint_path = resolve_runtime_path(
+        manifest["selected_run"]["checkpoint_path"],
+        anchor=resolved_manifest_path.parent,
+    )
 
     if not checkpoint_path.exists():
         msg = f"Selected checkpoint is missing: {checkpoint_path}"
@@ -240,8 +245,12 @@ def clear_sequence_runtime_cache() -> None:
 def get_selected_model_info(manifest_path: str | Path) -> dict[str, Any]:
     """Returns model metadata for serving and observability endpoints."""
 
-    manifest = load_model_manifest(manifest_path)
-    checkpoint_path = Path(str(manifest["selected_run"]["checkpoint_path"]))
+    resolved_manifest_path = resolve_runtime_path(manifest_path)
+    manifest = load_model_manifest(resolved_manifest_path)
+    checkpoint_path = resolve_runtime_path(
+        manifest["selected_run"]["checkpoint_path"],
+        anchor=resolved_manifest_path.parent,
+    )
 
     return {
         "schema_version": manifest["schema_version"],
@@ -267,7 +276,8 @@ def predict_sequence_samples(
 ) -> list[dict[str, Any]]:
     """Runs batch sequence inference against the selected manifest checkpoint."""
 
-    runtime = _load_selected_sequence_runtime(str(Path(manifest_path).resolve()))
+    resolved_manifest_path = resolve_runtime_path(manifest_path)
+    runtime = _load_selected_sequence_runtime(str(resolved_manifest_path))
     manifest = runtime.manifest
 
     threshold, resolved_mode = resolve_operating_threshold(

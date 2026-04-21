@@ -23,6 +23,7 @@ from early_sepsis.modeling.sequence_pipeline import (
     evaluate_checkpoint,
     sequence_model_family_name,
 )
+from early_sepsis.runtime_paths import make_portable_path
 
 SUPPORTED_MODEL_TYPES = frozenset({"gru", "lstm", "patchtst"})
 
@@ -483,18 +484,40 @@ def build_model_manifest_from_row(
         "selection_metric": selection_metric,
         "selected_run": {
             "run_name": str(row["run_name"]),
-            "run_dir": str(Path(str(row["run_dir"])).resolve()),
-            "checkpoint_path": str(Path(str(row["checkpoint_path"])).resolve()),
-            "run_config_path": str(run_config_path.resolve()),
+            "run_dir": make_portable_path(
+                Path(str(row["run_dir"])).resolve(),
+                project_root=resolved_project_root,
+            ),
+            "checkpoint_path": make_portable_path(
+                Path(str(row["checkpoint_path"])).resolve(),
+                project_root=resolved_project_root,
+            ),
+            "run_config_path": make_portable_path(
+                run_config_path.resolve(),
+                project_root=resolved_project_root,
+            ),
             "model_type": selected_model_type,
             "model_family": selected_model_family,
         },
         "dataset": {
             "dataset_tag": dataset_context["dataset_tag"],
             "dataset_format": dataset_context["dataset_format"],
-            "raw_data_path": dataset_context["raw_data_path"],
-            "windows_dir": dataset_context["windows_dir"],
-            "processed_dir": dataset_context["processed_dir"],
+            "raw_data_path": make_portable_path(
+                dataset_context["raw_data_path"],
+                project_root=resolved_project_root,
+            )
+            if dataset_context["raw_data_path"]
+            else "",
+            "windows_dir": make_portable_path(
+                dataset_context["windows_dir"],
+                project_root=resolved_project_root,
+            ),
+            "processed_dir": make_portable_path(
+                dataset_context["processed_dir"],
+                project_root=resolved_project_root,
+            )
+            if dataset_context["processed_dir"]
+            else "",
             "feature_columns": feature_columns,
             "mask_columns": dataset_context["mask_columns"],
             "static_feature_columns": static_feature_columns,
@@ -794,15 +817,25 @@ def analyze_checkpoint_calibration(
     }
     _json_dump(recommendations_path, recommendations_payload)
 
+    project_root = Path.cwd().resolve()
     summary_payload = {
-        "checkpoint_path": str(Path(checkpoint_path).resolve()),
-        "parquet_path": str(Path(parquet_path).resolve()),
+        "checkpoint_path": make_portable_path(
+            Path(checkpoint_path).resolve(),
+            project_root=project_root,
+        ),
+        "parquet_path": make_portable_path(
+            Path(parquet_path).resolve(),
+            project_root=project_root,
+        ),
         "sample_count": len(y_true),
         "positive_rate": float(y_true.mean()) if len(y_true) > 0 else 0.0,
         "default_threshold": float(default_threshold),
         "default_metrics": evaluation["metrics"],
         "recommended_thresholds": recommendations_payload,
-        "plot_paths": {name: str(path.resolve()) for name, path in plot_paths.items()},
+        "plot_paths": {
+            name: make_portable_path(path.resolve(), project_root=project_root)
+            for name, path in plot_paths.items()
+        },
     }
     _json_dump(summary_path, summary_payload)
 

@@ -160,6 +160,8 @@ def test_aggregate_export_and_manifest_selection(tmp_path: Path) -> None:
     assert loaded_manifest["selected_run"]["model_type"] == "gru"
     assert loaded_manifest["selected_run"]["model_family"] == "gru_classifier"
     assert loaded_manifest["model"]["model_family"] == "gru_classifier"
+    assert not Path(loaded_manifest["selected_run"]["checkpoint_path"]).is_absolute()
+    assert not Path(loaded_manifest["dataset"]["windows_dir"]).is_absolute()
     assert loaded_manifest["dataset"]["feature_signature"] == build_feature_signature(
         loaded_manifest["dataset"]["feature_columns"]
     )
