@@ -6,9 +6,12 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from early_sepsis.demo.app import _build_reliability_chart
 from early_sepsis.demo.inference_debug import count_unique_demo_windows
 from early_sepsis.demo.presentation import (
     build_metric_annotation,
+    build_operational_subset_note,
+    build_threshold_collapse_explanation,
     collect_metric_snapshot,
     collect_plot_artifacts,
     compute_operational_metrics,
@@ -18,6 +21,7 @@ from early_sepsis.demo.presentation import (
     load_reliability_curve,
     resolve_calibration_summary,
     safe_data_source_label,
+    sanitize_reliability_curve,
     sanitize_public_text,
     serialize_public_ui_metadata,
 )
@@ -111,13 +115,81 @@ def test_safe_data_source_label_uses_public_safe_labels() -> None:
 
 
 def test_build_metric_annotation_includes_direction_and_context() -> None:
+    auroc_annotation = build_metric_annotation("auroc")
+    auprc_annotation = build_metric_annotation("auprc")
     brier_annotation = build_metric_annotation("brier_score")
     ece_annotation = build_metric_annotation("expected_calibration_error")
 
+    assert auroc_annotation.startswith("Higher is better")
+    assert "threshold-invariant" in auroc_annotation.lower()
+    assert auprc_annotation.startswith("Higher is better")
+    assert "low prevalence" in auprc_annotation.lower()
+    assert "threshold-invariant" in auprc_annotation.lower()
     assert brier_annotation.startswith("Lower is better")
     assert "probabilities" in brier_annotation.lower()
+    assert "calibration-quality" in brier_annotation.lower()
     assert ece_annotation.startswith("Lower is better")
     assert "predicted risk" in ece_annotation.lower()
+    assert "calibration-quality" in ece_annotation.lower()
+
+
+def test_build_threshold_collapse_explanation_mentions_artifact_specific_behavior() -> None:
+    note = build_threshold_collapse_explanation(
+        [(0.95, ("default", "high_recall"))]
+    )
+
+    assert "Default (Baseline)" in note
+    assert "High Recall Target" in note
+    assert "artifact/model-specific behavior" in note
+    assert "not a UI bug" in note
+
+
+def test_build_operational_subset_note_explains_zero_positive_case() -> None:
+    note = build_operational_subset_note(
+        source_label="Deployment operational subset",
+        sample_count=120,
+        positive_count=0,
+    )
+
+    assert "compact deployment subset" in note.lower()
+    assert "zero actual positives" in note.lower()
+    assert "precision and sensitivity" in note.lower()
+
+
+def test_sanitize_reliability_curve_coerces_and_filters_invalid_rows() -> None:
+    frame = pd.DataFrame(
+        {
+            "bin": [0, 1, 2, "x", 4],
+            "bin_accuracy": ["0.2", "inf", -0.4, 0.5, 1.4],
+            "bin_confidence": [0.1, 0.2, 1.7, "bad", 0.6],
+            "sample_count": [10, 8, 0, 5, 3],
+        }
+    )
+
+    sanitized = sanitize_reliability_curve(frame)
+
+    assert not sanitized.empty
+    assert sanitized["bin_accuracy"].between(0.0, 1.0).all()
+    assert sanitized["bin_confidence"].between(0.0, 1.0).all()
+    assert (sanitized["sample_count"] > 0).all()
+    assert sanitized["bin_confidence"].is_monotonic_increasing
+
+
+def test_reliability_chart_axes_are_locked_to_unit_interval() -> None:
+    frame = pd.DataFrame(
+        {
+            "bin": [0, 1, 2],
+            "bin_accuracy": [0.05, 0.2, 0.6],
+            "bin_confidence": [0.1, 0.3, 0.7],
+            "sample_count": [12, 10, 8],
+        }
+    )
+
+    chart_spec = _build_reliability_chart(frame).to_dict()
+    line_encoding = chart_spec["layer"][0]["encoding"]
+
+    assert line_encoding["x"]["scale"]["domain"] == [0.0, 1.0]
+    assert line_encoding["y"]["scale"]["domain"] == [0.0, 1.0]
 
 
 def test_compute_operational_metrics_changes_with_threshold_mode() -> None:
@@ -294,6 +366,34 @@ def test_load_reliability_curve_normalizes_alternate_schema(
     assert frame.iloc[1]["bin_confidence"] == pytest.approx(0.16)
 
 
+def test_load_reliability_curve_returns_empty_when_all_rows_invalid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SEPSIS_PROJECT_ROOT", str(tmp_path))
+
+    public_root = tmp_path / "public_artifacts"
+    reliability_path = public_root / "analysis" / "calibration" / "reliability_curve.csv"
+    reliability_path.parent.mkdir(parents=True, exist_ok=True)
+    reliability_path.write_text(
+        (
+            "bin,bin_accuracy,bin_confidence,sample_count\n"
+            "0,inf,0.4,0\n"
+            "1,NaN,1.5,-2\n"
+        ),
+        encoding="utf-8",
+    )
+
+    frame = load_reliability_curve(
+        calibration_summary_path=None,
+        manifest_path=tmp_path / "artifacts" / "models" / "registry" / "selected_model.json",
+        public_artifacts_root=public_root,
+    )
+
+    assert frame is not None
+    assert frame.empty
+
+
 def test_load_experiment_comparison_uses_public_artifacts_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -355,6 +455,10 @@ def test_load_feature_importance_artifact_uses_public_artifacts_fallback(
 def test_streamlit_app_uses_public_facing_wording_without_raw_json() -> None:
     app_path = Path(__file__).resolve().parents[1] / "src" / "early_sepsis" / "demo" / "app.py"
     app_source = app_path.read_text(encoding="utf-8")
+    presentation_path = (
+        Path(__file__).resolve().parents[1] / "src" / "early_sepsis" / "demo" / "presentation.py"
+    )
+    presentation_source = presentation_path.read_text(encoding="utf-8")
 
     assert "st.json(" not in app_source
     assert "Developer debug mode" not in app_source
@@ -375,6 +479,10 @@ def test_streamlit_app_uses_public_facing_wording_without_raw_json() -> None:
     assert "Threshold-Dependent Operational Summary" in app_source
     assert "find_duplicate_threshold_modes" in app_source
     assert "operational-grid" in app_source
+    assert "filtered out during" in app_source
+    assert "sanitization because the bin statistics were invalid" in app_source
+    assert "Axes are fixed to [0, 1]." in app_source
+    assert "not a UI bug" in presentation_source
     assert (
         "if feature_importance_frame is not None and not feature_importance_frame.empty"
         in app_source

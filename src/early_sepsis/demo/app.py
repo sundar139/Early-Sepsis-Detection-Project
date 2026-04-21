@@ -4,6 +4,7 @@ import configparser
 from pathlib import Path
 from typing import Any
 
+import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -13,8 +14,11 @@ from early_sepsis.demo.presentation import (
     METRIC_LABELS,
     OPERATIONAL_UNAVAILABLE_GUIDANCE,
     PLOT_TITLES,
+    PREVALENCE_ANNOTATION,
     SAVED_WALKTHROUGH_UNAVAILABLE_GUIDANCE,
     build_metric_annotation,
+    build_operational_subset_note,
+    build_threshold_collapse_explanation,
     collect_metric_snapshot,
     collect_plot_artifacts,
     compute_operational_metrics,
@@ -408,7 +412,9 @@ def _load_operational_probability_frame(
     parquet_path: str,
     max_rows: int,
 ) -> pd.DataFrame:
-    split_frame = _load_split_samples(parquet_path, max_rows)
+    candidate_rows = max(max_rows * 5, 400)
+    candidate_frame = _load_split_samples(parquet_path, candidate_rows)
+    split_frame = _select_operational_subset(candidate_frame, max_rows=max_rows)
     if split_frame.empty:
         return pd.DataFrame(
             columns=["Sample", "End Hour", "Observed Label", "Risk Score"]
@@ -436,6 +442,95 @@ def _load_operational_probability_frame(
         )
 
     return pd.DataFrame(rows)
+
+
+def _select_operational_subset(split_frame: pd.DataFrame, *, max_rows: int) -> pd.DataFrame:
+    if split_frame.empty:
+        return split_frame
+
+    desired_rows = max(1, min(int(max_rows), len(split_frame)))
+    labels = pd.to_numeric(split_frame.get("label"), errors="coerce")
+    if labels.isna().all():
+        return split_frame.head(desired_rows).copy()
+
+    valid_label_mask = labels.isin([0, 1])
+    labeled_frame = split_frame.loc[valid_label_mask].copy()
+    if labeled_frame.empty:
+        return split_frame.head(desired_rows).copy()
+
+    labeled_frame["_label_int"] = labels.loc[valid_label_mask].astype(int)
+    positives = labeled_frame[labeled_frame["_label_int"] == 1]
+    negatives = labeled_frame[labeled_frame["_label_int"] == 0]
+
+    if positives.empty or negatives.empty:
+        return labeled_frame.drop(columns=["_label_int"]).head(desired_rows).copy()
+
+    target_positive = min(len(positives), max(3, int(round(desired_rows * 0.1))))
+    target_positive = max(1, min(target_positive, desired_rows - 1))
+    target_negative = desired_rows - target_positive
+    if target_negative <= 0:
+        target_negative = 1
+        target_positive = desired_rows - target_negative
+
+    positive_slice = positives.head(target_positive)
+    negative_slice = negatives.head(target_negative)
+    selected = pd.concat([positive_slice, negative_slice], axis=0)
+
+    if "end_hour" in selected.columns:
+        selected = selected.sort_values(by="end_hour", ascending=True)
+    else:
+        selected = selected.sort_index()
+
+    selected = selected.drop(columns=["_label_int"]).head(desired_rows)
+    return selected.copy()
+
+
+def _build_reliability_chart(reliability_curve: pd.DataFrame) -> alt.Chart:
+    chart_frame = reliability_curve.copy()
+    chart_frame["Bin Center"] = pd.to_numeric(chart_frame["bin_confidence"], errors="coerce")
+    chart_frame["Observed Frequency"] = pd.to_numeric(
+        chart_frame["bin_accuracy"], errors="coerce"
+    )
+    chart_frame["Predicted Confidence"] = pd.to_numeric(
+        chart_frame["bin_confidence"], errors="coerce"
+    )
+    chart_frame = chart_frame.dropna(
+        subset=["Bin Center", "Observed Frequency", "Predicted Confidence"]
+    )
+
+    series_frame = chart_frame[["Bin Center", "Observed Frequency", "Predicted Confidence"]].melt(
+        id_vars=["Bin Center"],
+        value_vars=["Observed Frequency", "Predicted Confidence"],
+        var_name="Series",
+        value_name="Probability",
+    )
+
+    axis_domain = [0.0, 1.0]
+    baseline = pd.DataFrame({"Bin Center": [0.0, 1.0], "Probability": [0.0, 1.0]})
+
+    reliability_lines = alt.Chart(series_frame).mark_line(point=True).encode(
+        x=alt.X(
+            "Bin Center:Q",
+            title="Predicted probability / bin center",
+            scale=alt.Scale(domain=axis_domain),
+        ),
+        y=alt.Y(
+            "Probability:Q",
+            title="Observed frequency / predicted confidence",
+            scale=alt.Scale(domain=axis_domain),
+        ),
+        color=alt.Color("Series:N", title=None),
+    )
+
+    calibration_reference = alt.Chart(baseline).mark_line(
+        strokeDash=[6, 4],
+        color="#9db0d2",
+    ).encode(
+        x=alt.X("Bin Center:Q", scale=alt.Scale(domain=axis_domain)),
+        y=alt.Y("Probability:Q", scale=alt.Scale(domain=axis_domain)),
+    )
+
+    return (reliability_lines + calibration_reference).properties(height=260)
 
 
 def _row_to_request_sample(row: pd.Series) -> dict[str, Any]:
@@ -773,10 +868,7 @@ def _render_performance_summary(
         _render_card(
             title="Dataset Prevalence",
             value=_format_percent(prevalence_value),
-            subtitle=(
-                "Lower prevalence increases class imbalance and typically makes AUPRC more "
-                "decision-relevant than AUROC for deployment review."
-            ),
+            subtitle=PREVALENCE_ANNOTATION,
         )
 
     st.info(
@@ -835,18 +927,9 @@ def _render_threshold_strategy(
         thresholds,
         modes=available_modes,
     )
-    if duplicate_thresholds:
-        duplicate_notes = "; ".join(
-            (
-                f"{', '.join(format_threshold_mode(mode) for mode in modes)}"
-                f" all map to {threshold_value:.3f}"
-            )
-            for threshold_value, modes in duplicate_thresholds
-        )
-        st.info(
-            "Some operating modes currently share the same threshold for this selected model: "
-            f"{duplicate_notes}."
-        )
+    collapse_note = build_threshold_collapse_explanation(duplicate_thresholds)
+    if collapse_note:
+        st.info(collapse_note)
 
     st.caption(
         "Mode selection changes only the decision threshold. Model weights, preprocessing, and "
@@ -889,6 +972,14 @@ def _render_operational_summary(
         labels=operational_frame["Observed Label"].to_numpy(),
         threshold=applied_threshold,
     )
+
+    subset_note = build_operational_subset_note(
+        source_label=source_label,
+        sample_count=int(metrics["sample_count"]),
+        positive_count=int(metrics["positive_count"]),
+    )
+    if subset_note:
+        st.caption(subset_note)
 
     cards = [
         (
@@ -944,11 +1035,11 @@ def _render_operational_summary(
         if abs(threshold_value - applied_threshold) <= 1e-6
     ]
     if shared_modes:
-        matching_modes = ", ".join(format_threshold_mode(mode) for mode in shared_modes[0])
-        st.info(
-            "Operational outputs remain identical across modes sharing this threshold: "
-            f"{matching_modes}."
+        shared_threshold_note = build_threshold_collapse_explanation(
+            [(applied_threshold, shared_modes[0])]
         )
+        if shared_threshold_note:
+            st.info(shared_threshold_note)
 
     confusion_table = pd.DataFrame(
         {
@@ -1074,22 +1165,29 @@ def _render_evaluation_visuals(
                 st.markdown("</div>", unsafe_allow_html=True)
                 continue
 
-            if plot_key == "reliability_curve" and reliability_curve is not None:
-                rendered_curve = reliability_curve.rename(
-                    columns={
-                        "bin": "Bin",
-                        "bin_accuracy": "Observed Frequency",
-                        "bin_confidence": "Predicted Confidence",
-                    }
+            if (
+                plot_key == "reliability_curve"
+                and reliability_curve is not None
+                and not reliability_curve.empty
+            ):
+                reliability_chart = _build_reliability_chart(reliability_curve)
+                st.altair_chart(reliability_chart, use_container_width=True)
+                st.caption(
+                    "Reliability curve generated from sanitized artifact-backed bin statistics. "
+                    "Axes are fixed to [0, 1]."
                 )
-                st.line_chart(
-                    rendered_curve.set_index("Bin")[[
-                        "Observed Frequency",
-                        "Predicted Confidence",
-                    ]],
-                    height=260,
+            elif plot_key == "reliability_curve" and reliability_curve is not None:
+                st.markdown(
+                    (
+                        "<div class='calibration-explainer-card'>"
+                        "<strong>Calibration Reliability Overview</strong><br>"
+                        "A reliability artifact was detected, but all rows were filtered out during "
+                        "sanitization because the bin statistics were invalid for plotting. "
+                        "This protects against misleading calibration visuals in deployment."
+                        "</div>"
+                    ),
+                    unsafe_allow_html=True,
                 )
-                st.caption("Reliability curve generated from artifact-backed bin statistics.")
             else:
                 if plot_key == "reliability_curve":
                     st.markdown(
@@ -1513,7 +1611,7 @@ def main() -> None:
             "Rows to load",
             min_value=20,
             max_value=1000,
-            value=200,
+            value=320,
             step=20,
             help=(
                 "Controls how many candidate windows are loaded from packaged parquet artifacts. "

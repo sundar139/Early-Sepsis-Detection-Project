@@ -49,6 +49,22 @@ METRIC_EXPLANATIONS: dict[str, str] = {
     ),
 }
 
+METRIC_THRESHOLD_CONTEXT: dict[str, str] = {
+    "auroc": "Threshold-invariant.",
+    "auprc": "Threshold-invariant.",
+    "precision": "Threshold-dependent.",
+    "recall": "Threshold-dependent.",
+    "f1": "Threshold-dependent.",
+    "accuracy": "Threshold-dependent.",
+    "brier_score": "Threshold-invariant calibration-quality metric.",
+    "expected_calibration_error": "Threshold-invariant calibration-quality metric.",
+}
+
+PREVALENCE_ANNOTATION = (
+    "Threshold-invariant dataset characteristic. Low prevalence increases class imbalance, "
+    "so AUPRC is often more decision-relevant than AUROC for deployment review."
+)
+
 CALIBRATION_UNAVAILABLE_GUIDANCE = (
     "Calibration visuals are unavailable in this deployment package. Expected Calibration Error "
     "(ECE) tracks how closely predicted risk matches observed frequency, while Brier "
@@ -93,9 +109,9 @@ PLOT_DISPLAY_ORDER: tuple[str, ...] = (
 )
 
 THRESHOLD_MODE_LABELS: dict[str, str] = {
-    "default": "Default",
+    "default": "Default (Baseline)",
     "balanced": "Balanced",
-    "high_recall": "High Recall",
+    "high_recall": "High Recall Target",
 }
 
 THRESHOLD_MODE_DESCRIPTIONS: dict[str, str] = {
@@ -130,12 +146,58 @@ def describe_threshold_mode(mode: str) -> str:
 def build_metric_annotation(metric_key: str) -> str:
     direction = METRIC_DIRECTION_LABELS.get(metric_key, "")
     explanation = METRIC_EXPLANATIONS.get(metric_key, "")
+    threshold_context = METRIC_THRESHOLD_CONTEXT.get(metric_key, "")
 
-    if direction and explanation:
-        return f"{direction}. {explanation}"
-    if direction:
-        return direction
-    return explanation
+    parts = [part for part in (direction, explanation, threshold_context) if part]
+    return " ".join(parts)
+
+
+def build_threshold_collapse_explanation(
+    duplicate_thresholds: Sequence[tuple[float, Sequence[str]]],
+) -> str:
+    if not duplicate_thresholds:
+        return ""
+
+    collapse_summary = "; ".join(
+        (
+            f"{', '.join(format_threshold_mode(mode) for mode in modes)} "
+            f"all map to {threshold_value:.3f}"
+        )
+        for threshold_value, modes in duplicate_thresholds
+    )
+    return (
+        "For this selected artifact set, "
+        f"{collapse_summary}. "
+        "This is expected artifact/model-specific behavior, not a UI bug."
+    )
+
+
+def build_operational_subset_note(
+    *,
+    source_label: str,
+    sample_count: int,
+    positive_count: int,
+) -> str:
+    note = (
+        "This panel uses a compact deployment subset for responsiveness and portability; "
+        "it is not the full offline evaluation cohort."
+    )
+    if positive_count <= 0:
+        return (
+            f"{note} At low prevalence and small row counts (n={sample_count}), sampled windows "
+            "can contain zero actual positives, which makes precision and sensitivity display as 0."
+        )
+
+    if positive_count < 3:
+        return (
+            f"{note} The current subset includes only {positive_count} positive windows out of "
+            f"{sample_count}, so precision and sensitivity can vary substantially."
+        )
+
+    if "subset" in source_label.lower():
+        return note
+
+    return ""
 
 
 def find_duplicate_threshold_modes(
@@ -475,7 +537,10 @@ def load_reliability_curve(
 
         required_columns = {"bin", "bin_accuracy", "bin_confidence", "sample_count"}
         if required_columns.issubset(frame.columns):
-            return frame[["bin", "bin_accuracy", "bin_confidence", "sample_count"]]
+            sanitized = sanitize_reliability_curve(
+                frame[["bin", "bin_accuracy", "bin_confidence", "sample_count"]]
+            )
+            return sanitized
 
         alternate_columns = {
             "bin_index",
@@ -491,9 +556,46 @@ def load_reliability_curve(
                     "mean_predicted_probability": "bin_confidence",
                 }
             )
-            return normalized[["bin", "bin_accuracy", "bin_confidence", "sample_count"]]
+            sanitized = sanitize_reliability_curve(
+                normalized[["bin", "bin_accuracy", "bin_confidence", "sample_count"]]
+            )
+            return sanitized
 
     return None
+
+
+def sanitize_reliability_curve(frame: pd.DataFrame) -> pd.DataFrame:
+    """Normalizes reliability bins for safe public plotting."""
+
+    base_columns = ["bin", "bin_accuracy", "bin_confidence", "sample_count"]
+    if frame.empty:
+        return pd.DataFrame(columns=base_columns)
+
+    missing_columns = [column for column in base_columns if column not in frame.columns]
+    if missing_columns:
+        return pd.DataFrame(columns=base_columns)
+
+    sanitized = frame[base_columns].copy()
+    for column in base_columns:
+        sanitized[column] = pd.to_numeric(sanitized[column], errors="coerce")
+
+    sanitized = sanitized.replace([np.inf, -np.inf], np.nan)
+    sanitized = sanitized.dropna(subset=base_columns)
+    if sanitized.empty:
+        return pd.DataFrame(columns=base_columns)
+
+    sanitized = sanitized[sanitized["sample_count"] > 0]
+    if sanitized.empty:
+        return pd.DataFrame(columns=base_columns)
+
+    sanitized["sample_count"] = np.floor(sanitized["sample_count"]).astype(np.int64)
+
+    # Probability-like statistics are clipped to valid bounds for robust plotting.
+    sanitized["bin_accuracy"] = sanitized["bin_accuracy"].clip(0.0, 1.0)
+    sanitized["bin_confidence"] = sanitized["bin_confidence"].clip(0.0, 1.0)
+
+    sanitized = sanitized.sort_values(by=["bin_confidence", "bin"], ascending=True)
+    return sanitized.reset_index(drop=True)
 
 
 def load_experiment_comparison(
