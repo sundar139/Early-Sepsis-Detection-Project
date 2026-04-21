@@ -843,6 +843,12 @@ def _render_performance_summary(
     )
     st.caption(f"Metric source: {metric_source}")
 
+    prevalence_value: float | None = None
+    if calibration_summary is not None:
+        positive_rate = calibration_summary.get("positive_rate")
+        if isinstance(positive_rate, (float, int)):
+            prevalence_value = float(positive_rate)
+
     invariant_metric_keys = (
         "auroc",
         "auprc",
@@ -851,18 +857,17 @@ def _render_performance_summary(
     )
     columns = st.columns(len(invariant_metric_keys) + 1)
     for index, metric_key in enumerate(invariant_metric_keys):
+        metric_value = metric_snapshot.get(metric_key)
         with columns[index]:
             _render_card(
                 title=METRIC_LABELS[metric_key],
-                value=_format_metric_value(metric_snapshot.get(metric_key)),
-                subtitle=build_metric_annotation(metric_key),
+                value=_format_metric_value(metric_value),
+                subtitle=build_metric_annotation(
+                    metric_key,
+                    metric_value=metric_value,
+                    prevalence_value=prevalence_value,
+                ),
             )
-
-    prevalence_value: float | None = None
-    if calibration_summary is not None:
-        positive_rate = calibration_summary.get("positive_rate")
-        if isinstance(positive_rate, (float, int)):
-            prevalence_value = float(positive_rate)
 
     with columns[-1]:
         _render_card(

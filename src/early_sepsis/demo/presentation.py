@@ -45,7 +45,7 @@ METRIC_EXPLANATIONS: dict[str, str] = {
     "accuracy": "Overall fraction of correct predictions.",
     "brier_score": "Mean squared error between predicted probabilities and true outcomes.",
     "expected_calibration_error": (
-        "Average absolute gap between predicted risk and observed frequency across bins."
+        "Measures calibration gap between predicted confidence and observed frequency."
     ),
 }
 
@@ -143,12 +143,35 @@ def describe_threshold_mode(mode: str) -> str:
     return THRESHOLD_MODE_DESCRIPTIONS.get(mode, "")
 
 
-def build_metric_annotation(metric_key: str) -> str:
+def build_metric_annotation(
+    metric_key: str,
+    *,
+    metric_value: float | None = None,
+    prevalence_value: float | None = None,
+) -> str:
     direction = METRIC_DIRECTION_LABELS.get(metric_key, "")
     explanation = METRIC_EXPLANATIONS.get(metric_key, "")
     threshold_context = METRIC_THRESHOLD_CONTEXT.get(metric_key, "")
 
     parts = [part for part in (direction, explanation, threshold_context) if part]
+
+    if metric_key == "auprc":
+        if isinstance(prevalence_value, (float, int)) and 0.0 < float(prevalence_value) <= 1.0:
+            baseline = float(prevalence_value)
+            if isinstance(metric_value, (float, int)) and float(metric_value) >= 0.0:
+                lift = float(metric_value) / baseline
+                parts.append(
+                    "Random-baseline AUPRC is approximately prevalence "
+                    f"({baseline:.3f}); current AUPRC is {lift:.1f}x baseline."
+                )
+            else:
+                parts.append(
+                    "Random-baseline AUPRC is approximately the prevalence "
+                    f"({baseline:.3f})."
+                )
+        else:
+            parts.append("Under very low prevalence, random-baseline AUPRC is approximately prevalence.")
+
     return " ".join(parts)
 
 

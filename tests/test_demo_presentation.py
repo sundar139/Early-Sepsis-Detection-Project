@@ -129,8 +129,28 @@ def test_build_metric_annotation_includes_direction_and_context() -> None:
     assert "probabilities" in brier_annotation.lower()
     assert "calibration-quality" in brier_annotation.lower()
     assert ece_annotation.startswith("Lower is better")
-    assert "predicted risk" in ece_annotation.lower()
+    assert "predicted confidence" in ece_annotation.lower()
     assert "calibration-quality" in ece_annotation.lower()
+
+
+def test_build_metric_annotation_for_auprc_includes_random_baseline_lift() -> None:
+    annotation = build_metric_annotation(
+        "auprc",
+        metric_value=0.03,
+        prevalence_value=0.01,
+    )
+
+    assert "random-baseline auprc" in annotation.lower()
+    assert "approximately prevalence (0.010)" in annotation.lower()
+    assert "3.0x baseline" in annotation.lower()
+
+
+def test_build_metric_annotation_for_ece_mentions_calibration_gap() -> None:
+    annotation = build_metric_annotation("expected_calibration_error")
+
+    assert "calibration gap" in annotation.lower()
+    assert "predicted confidence" in annotation.lower()
+    assert "observed frequency" in annotation.lower()
 
 
 def test_build_threshold_collapse_explanation_mentions_artifact_specific_behavior() -> None:
@@ -521,6 +541,38 @@ def test_curated_demo_bundle_uses_synthetic_ids_and_unique_windows() -> None:
         for row in frame.itertuples(index=False)
     ]
     assert count_unique_demo_windows(samples) > 1
+
+
+def test_curated_demo_bundle_includes_mixed_labels_when_source_supports_it() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    demo_path = project_root / "assets" / "demo" / "sequence_demo_samples.parquet"
+    if not demo_path.exists():
+        pytest.skip("Curated demo bundle is not present in this environment.")
+
+    source_paths = [
+        project_root / "artifacts" / "windows" / "validation.parquet",
+        project_root / "artifacts" / "windows" / "test.parquet",
+    ]
+    available_sources = [path for path in source_paths if path.exists()]
+    if not available_sources:
+        pytest.skip("Window artifacts are not available to evaluate source label support.")
+
+    source_label_values: list[pd.Series] = []
+    for path in available_sources:
+        frame = pd.read_parquet(path, columns=["label"])
+        if frame.empty:
+            continue
+        source_label_values.append(frame["label"].astype(int))
+
+    if not source_label_values:
+        pytest.skip("No source label values were loaded from available windows artifacts.")
+
+    source_labels = pd.concat(source_label_values, ignore_index=True)
+    if set(source_labels.unique().tolist()) != {0, 1}:
+        pytest.skip("Source windows do not contain both positive and negative labels.")
+
+    demo_labels = pd.read_parquet(demo_path, columns=["label"])["label"].astype(int)
+    assert set(demo_labels.unique().tolist()) == {0, 1}
 
 
 def test_operational_subset_bundle_uses_synthetic_ids_when_available() -> None:

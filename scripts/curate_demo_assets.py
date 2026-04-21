@@ -146,11 +146,16 @@ def _load_candidate_rows(
 def _choose_demo_indices(
     *,
     probabilities: np.ndarray,
+    labels: np.ndarray,
     threshold: float,
     demo_count: int,
 ) -> list[int]:
     if probabilities.size == 0:
         return []
+
+    if labels.shape[0] != probabilities.shape[0]:
+        msg = "labels and probabilities must have the same length"
+        raise ValueError(msg)
 
     per_bucket = max(1, demo_count // 3)
 
@@ -176,13 +181,42 @@ def _choose_demo_indices(
         per_bucket,
     )
 
+    positive_indices = np.where(labels == 1)[0]
+    negative_indices = np.where(labels == 0)[0]
+    positive_selected: list[int] = []
+    negative_selected: list[int] = []
+
+    if positive_indices.size > 0 and negative_indices.size > 0:
+        positive_quota = min(
+            positive_indices.size,
+            max(3, demo_count // 6),
+        )
+        sorted_positive = positive_indices[np.argsort(probabilities[positive_indices])[::-1]]
+        positive_selected = _select_evenly(sorted_positive, positive_quota)
+
+        negative_quota = min(
+            negative_indices.size,
+            max(3, demo_count // 4),
+        )
+        sorted_negative = negative_indices[np.argsort(probabilities[negative_indices])]
+        negative_selected = _select_evenly(sorted_negative, negative_quota)
+
     selected: list[int] = []
     seen: set[int] = set()
-    for index in low_selected + border_selected + high_selected:
+    priority_candidates = (
+        positive_selected
+        + negative_selected
+        + low_selected
+        + border_selected
+        + high_selected
+    )
+    for index in priority_candidates:
         if index in seen:
             continue
         selected.append(index)
         seen.add(index)
+        if len(selected) >= demo_count:
+            return selected[:demo_count]
 
     fill_candidates = np.concatenate(
         [
@@ -332,10 +366,12 @@ def main() -> int:
         [float(prediction["predicted_probability"]) for prediction in predictions],
         dtype=np.float64,
     )
+    labels = candidate_frame["label"].to_numpy(dtype=np.int64)
     threshold_used = float(predictions[0]["threshold_used"]) if predictions else 0.5
 
     demo_indices = _choose_demo_indices(
         probabilities=probabilities,
+        labels=labels,
         threshold=threshold_used,
         demo_count=args.demo_count,
     )
@@ -392,6 +428,10 @@ def main() -> int:
         "operational_output_path": str(resolve_runtime_path(args.output_operational_path)),
         "demo_row_count": len(demo_frame),
         "operational_row_count": len(operational_frame),
+        "demo_label_counts": {
+            int(key): int(value)
+            for key, value in demo_frame["label"].value_counts().sort_index().items()
+        },
         "demo_probability_min": float(probabilities[demo_indices].min()) if demo_indices else None,
         "demo_probability_max": float(probabilities[demo_indices].max()) if demo_indices else None,
         "diagnostics": diagnostics,
